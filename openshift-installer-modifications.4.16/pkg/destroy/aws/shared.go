@@ -3,9 +3,9 @@ package aws
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
-	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/arn"
@@ -24,7 +24,7 @@ func (o *ClusterUninstaller) removeSharedTags(
 	ctx context.Context,
 	session *session.Session,
 	tagClients []*resourcegroupstaggingapi.ResourceGroupsTaggingAPI,
-	tracker *errorTracker,
+	tracker *ErrorTracker,
 ) error {
 	for _, key := range o.clusterOwnedKeys() {
 		if err := o.removeSharedTag(ctx, session, tagClients, key, tracker); err != nil {
@@ -50,13 +50,14 @@ func (o *ClusterUninstaller) clusterOwnedKeys() []string {
 	return keys
 }
 
-func (o *ClusterUninstaller) removeSharedTag(ctx context.Context, session *session.Session, tagClients []*resourcegroupstaggingapi.ResourceGroupsTaggingAPI, key string, tracker *errorTracker) error {
+func (o *ClusterUninstaller) removeSharedTag(ctx context.Context, session *session.Session, tagClients []*resourcegroupstaggingapi.ResourceGroupsTaggingAPI, key string, tracker *ErrorTracker) error {
 	const sharedValue = "shared"
 
- 	skip := os.Getenv("SkipDestroyingSharedTags")
- 	if skip != "" {
- 		return nil
- 	}
+	// Allow skipping destruction of shared tags via environment variable
+	skip := os.Getenv("SkipDestroyingSharedTags")
+	if skip != "" {
+		return nil
+	}
 
 	request := &resourcegroupstaggingapi.UntagResourcesInput{
 		TagKeys: []*string{aws.String(key)},
@@ -115,9 +116,10 @@ func (o *ClusterUninstaller) removeSharedTag(ctx context.Context, session *sessi
 				o.Logger.Debugf("No matches in %s for %s: shared, removing client", *tagClient.Config.Region, key)
 				continue
 			}
- 			ignore := os.Getenv("IgnoreErrorsOnSharedTags")
- 			if ignore == "" {
-
+			
+			// Allow ignoring errors on shared tags via environment variable
+			ignore := os.Getenv("IgnoreErrorsOnSharedTags")
+			if ignore == "" {
 				// appending the tag client here but it needs to be removed if there is a InvalidParameterException when trying to
 				// untag below since that only leads to an infinite loop error.
 				nextTagClients = append(nextTagClients, tagClient)
@@ -145,7 +147,7 @@ func (o *ClusterUninstaller) removeSharedTag(ctx context.Context, session *sessi
 						continue
 					}
 					o.Logger.WithField("arn", *arn).Infof("Removed tag %s: shared", key)
-					removed[*arn] = struct{}{}
+					removed[*arn] = exists
 				}
 			}
 		}
@@ -153,10 +155,10 @@ func (o *ClusterUninstaller) removeSharedTag(ctx context.Context, session *sessi
 	}
 
 	iamClient := iam.New(session)
-	iamRoleSearch := &iamRoleSearch{
-		client:  iamClient,
-		filters: []Filter{{key: sharedValue}},
-		logger:  o.Logger,
+	iamRoleSearch := &IamRoleSearch{
+		Client:  iamClient,
+		Filters: []Filter{{key: sharedValue}},
+		Logger:  o.Logger,
 	}
 	o.Logger.Debugf("Search for and remove shared tags for IAM roles matching %s: shared", key)
 	if err := wait.PollImmediateUntil(
