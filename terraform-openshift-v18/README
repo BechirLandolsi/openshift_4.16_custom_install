@@ -1,0 +1,91 @@
+v17
+
+ajout du metadata.json dans le s3 et récupération via le s3
+création répertoire output pour les résultats temporaires dans le delete-record.sh
+
+
+diff -wB openshift-v17/clean-cluster.sh openshift-v16/clean-cluster.sh
+15,16d14
+< aws s3 cp s3://$bucket/cluster.metadata.json installer-files/metadata.json
+< 
+diff -wB openshift-v17/delete-record.sh openshift-v16/delete-record.sh
+4d3
+< mkdir -p output
+Les sous-répertoires openshift-v17/env et openshift-v16/env sont identiques
+diff -wB openshift-v17/get-ingress-lb.sh openshift-v16/get-ingress-lb.sh
+14c14
+< 	if [[ ! -f installer-files/auth/kubeconfig ]]; then
+---
+> 	if [[ ! -f installer-files/kubeconfig ]]; then
+26,31d25
+< 	if [[ ! -f installer-files/metadata.json ]]; then
+< 		mkdir -p installer-files
+< 		aws s3 cp s3://$bucket/cluster.metadata.json installer-files/metadata.json
+< 	fi
+< 
+< 
+diff -wB openshift-v17/save-cluster-states.sh openshift-v16/save-cluster-states.sh
+8,9d7
+< if [[ -f installer-files/metadata.json ]]; then aws s3 cp installer-files/metadata.json s3://$bucket/cluster.metadata.json; fi 
+< 
+
+----------------------------------
+
+main.openshift.tf:
+    null_resource.configuration_OIDC
+  depends_on = [null_resource.aws_key_pair]
+    null_resource.extract_cred_request
+  depends_on = [null_resource.configuration_OIDC]
+    null_resource.create_roles
+  depends_on = [null_resource.extract_cred_request]
+    aws_s3_object.keys
+  depends_on = [null_resource.create_roles]
+    aws_s3_object.openid
+  depends_on = [null_resource.create_roles]
+
+openshift.prepare.tf:
+    si null_resource.create_roles ok
+      lance openshift-install create manifest
+      recopie les manifests générés dans output (cf main.openshift.tf)
+      recopie les éléments tls générés dans output (cf main.openshift.tf)
+      rajoute le manifest pour le ingress controller (cf templates.tf)
+
+openshift.install.tf:
+    null_resource.openshift_install
+      si openshift.prepare terminé
+        lance l'installation du cluster : openshift-install create cluster
+        attends jusqu'à ce que l'API du cluster réponde et que le service default-routeur soit déployé (timeout 30 min)
+        sauvegarde les états du cluster (états terraform openshift, kubeconfig, kubeadmin, logs d'installation)
+        termine toujours ok
+
+    null_resource.openshift_installed
+      si openshift_install ok
+        attends de voir le message d'installation complète dans les logs d'installation (timeout 30 min)
+        sauvegarde les états du cluster (états terraform openshift, kubeconfig, kubeadmin, logs d'installation)
+        si pas le message voulu, en erreur
+
+    null_resource.openshift_ready
+      si openshift_install ok
+        attends jusqu'à ce que l'API du cluster réponde et que le hostname de l'ingress soit définit (timeout 30 min)
+        sauvegarde les états du cluster (états terraform openshift, kubeconfig, kubeadmin, logs d'installation)
+        termine ko si pas de hostname définit
+
+    external.get_ingress_lb
+      si openshift_ready ok
+         script get-ingress-elb.sh
+         attends jusqu'à la récupération du hostname de l'ingress (timeout 30 min)
+         récupère le hostname
+         récupère via commande aws la description de l'elb qui correspond au hostname
+         renvoie l'arn de l'elb
+
+    aws_route53_record.ingress_dns_route
+      si external.get_ingress_lb renvoie l'arn
+         générère le DNS de l'ingress *.apps.<cluster name>.<domaine>
+
+openshift.day2.tf:
+    null_resource.openshift_day2
+      si openshift_installed ok
+         génère les manifests précisés dans le depends-on : local_file.configmap_user_ca_bundle_example,...
+         déploie ces manifests sur le cluster
+
+

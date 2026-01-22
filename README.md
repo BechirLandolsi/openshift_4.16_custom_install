@@ -1,0 +1,1698 @@
+# OpenShift 4.16 Installation on AWS - Complete Guide
+
+**Version:** 4.16.9  
+**Document Date:** January 21, 2026  
+**Target Environment:** AWS (Possibly Disconnected/Air-gapped)
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [What's New in 4.16](#whats-new-in-416)
+3. [Prerequisites](#prerequisites)
+4. [Architecture Overview](#architecture-overview)
+5. [Part 1: Custom AMI Creation](#part-1-custom-ami-creation)
+6. [Part 2: Building the Custom OpenShift Installer](#part-2-building-the-custom-openshift-installer)
+7. [Part 3: Terraform Configuration](#part-3-terraform-configuration)
+8. [Part 4: Step-by-Step Installation](#part-4-step-by-step-installation)
+9. [Part 5: Disconnected Installation](#part-5-disconnected-installation)
+10. [Troubleshooting](#troubleshooting)
+11. [Appendix](#appendix)
+
+---
+
+## Overview
+
+This guide provides a complete, step-by-step procedure for deploying OpenShift 4.16 on AWS with the following custom requirements:
+
+- **Modified OpenShift Installer**: Disables tag validation on shared subnets/VPCs
+- **Custom AMI**: RHCOS image with IMDSv2 enabled and KMS encryption
+- **Terraform Automation**: Infrastructure-as-Code deployment with predictable InfraIDs
+- **Air-gapped Support**: Optional disconnected installation capability
+- **No Subnet Tagging**: Works without permissions to tag shared AWS resources
+
+### Key Differences from OpenShift 4.14
+
+- **OpenShift Version**: 4.16.9 (updated from 4.14.21)
+- **Golang Version**: 1.22.x (updated from 1.20.10)
+- **Enhanced IMDSv2 Support**: Mandatory for all EC2 instances
+- **KMS Encryption**: Custom key support for all EBS volumes
+- **API Changes**: Updated installer codebase with new AWS SDK patterns
+
+---
+
+## What's New in 4.16
+
+### OpenShift 4.16 Features
+
+1. **Security Enhancements**
+   - Mandatory IMDSv2 for EC2 instance metadata
+   - Enhanced encryption options for persistent volumes
+   - Improved Pod Security Admission
+
+2. **Kubernetes 1.29**
+   - Updated Kubernetes core to 1.29
+   - New CRD versioning improvements
+   - Enhanced scheduler performance
+
+3. **Networking Improvements**
+   - OVN-Kubernetes enhancements
+   - Better load balancer integration
+   - IPv6 dual-stack improvements
+
+4. **Installer Changes**
+   - Improved AWS authentication flows
+   - Better error handling for shared resources
+   - Enhanced OIDC support for manual credentials mode
+
+### Changes from Our 4.14 Implementation
+
+| Aspect | OpenShift 4.14.21 | OpenShift 4.16.9 |
+|--------|-------------------|------------------|
+| **Release Image** | `4.14.21-x86_64` | `4.16.9-x86_64` |
+| **Go Version** | 1.20.10 | 1.22.x |
+| **Installer Repo Branch** | `release-4.14` | `release-4.16` |
+| **Code Modifications** | 4 files | 4 files (same locations) |
+| **Terraform Version** | v17 | v18 |
+| **AMI Base** | RHCOS 4.14 | RHCOS 4.16 |
+| **IMDSv2** | Optional | Mandatory |
+
+---
+
+## Prerequisites
+
+### Required Tools
+
+| Tool | Minimum Version | Purpose |
+|------|----------------|---------|
+| **Git** | 2.30+ | Clone OpenShift installer repository |
+| **Go** | 1.22.x | Build custom installer binary |
+| **Terraform** | 1.5.0+ | Infrastructure provisioning |
+| **AWS CLI** | 2.x | AWS resource management and AMI creation |
+| **oc client** | 4.16+ | OpenShift cluster operations |
+| **wget** or **curl** | Any | Download RHCOS VMDK files |
+| **jq** | 1.6+ | JSON parsing in scripts |
+
+### AWS Permissions Required
+
+#### For Installation (IAM User/Role):
+- EC2: Full access (except tagging on shared subnets)
+- S3: Full access for OIDC and terraform state
+- IAM: Create/manage roles with permission boundaries
+- ELB/ALB: Full access
+- Route53: Create records (hosted zone provided)
+- KMS: Use KMS keys for encryption
+
+#### For AMI Creation:
+- EC2: AMI creation and management
+- EC2: Snapshot creation
+- KMS: Encrypt with custom keys
+- S3: Upload temporary files
+
+#### Not Required (This is why we modify the installer):
+- ❌ EC2:CreateTags on shared subnets
+- ❌ EC2:DeleteTags on shared subnets
+- ❌ Route53:ChangeTagsForResource on shared hosted zones
+
+### Network Requirements
+
+- **Existing VPC**: Customer-provided VPC
+- **Subnets**: At least 3 private subnets across 3 AZs
+- **Route53 Hosted Zone**: For cluster DNS records
+- **Proxy (if air-gapped)**: HTTP/HTTPS proxy for external access
+- **Egress (if connected)**:
+  - `quay.io` (OpenShift images)
+  - `registry.redhat.io` (Red Hat registry)
+  - `api.openshift.com` (telemetry)
+  - AWS service endpoints
+
+### Customer-Specific Context
+
+Based on the customer's existing 4.14 deployment:
+
+- ✅ **Shared VPC Model**: Multiple clusters in same VPC
+- ✅ **Permission Boundaries**: CCOE-managed IAM boundaries
+- ✅ **Proxy Configuration**: Internal proxy for external access
+- ✅ **KMS Encryption**: Custom KMS keys for EBS volumes
+- ✅ **Terraform State**: Remote state in S3 with DynamoDB locking
+- ⚠️ **Disconnected Mode**: To be confirmed (likely required)
+
+---
+
+## Architecture Overview
+
+### Deployment Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 1: Preparation                                            │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Create Custom RHCOS 4.16 AMI (IMDSv2 + KMS)                │
+│ 2. Build Custom OpenShift Installer (Tag Bypass)               │
+│ 3. Configure Terraform Variables                                │
+│ 4. Prepare Pull Secret (+ Mirror Registry if disconnected)     │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 2: Terraform Infrastructure (Manual Credentials Mode)    │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Create S3 Bucket for OIDC Provider                          │
+│ 2. Generate IAM Roles (with Permission Boundaries)             │
+│ 3. Create SSH Key Pair                                         │
+│ 4. Generate OpenShift Manifests                                │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 3: OpenShift Installation                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Custom Installer Creates Cluster Infrastructure             │
+│    - Control Plane nodes (with Custom AMI)                     │
+│    - Bootstrap node (temporary)                                 │
+│    - Network Load Balancers                                     │
+│    - Security Groups                                            │
+│ 2. Bootstrap Completes → Control Plane Ready                   │
+│ 3. Worker Nodes Join Cluster                                   │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ Phase 4: Post-Installation (Day 2)                             │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Configure Ingress DNS (Route53 Record)                      │
+│ 2. Deploy Infra Nodes (Optional)                               │
+│ 3. Configure Cluster-Wide Proxy (if needed)                    │
+│ 4. Apply Additional Configurations                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Modified Installer Behavior
+
+The custom installer modifications allow installation to proceed without full tagging permissions:
+
+| Scenario | Standard Installer | Modified Installer |
+|----------|-------------------|-------------------|
+| **Tag Shared Subnets** | ❌ Fails if no permission | ✅ Continues (env var) |
+| **Tag Hosted Zone** | ❌ Fails if no permission | ✅ Continues (env var) |
+| **InfraID Generation** | Random 5-char suffix | ✅ Controllable via env var |
+| **Destroy Shared Tags** | ❌ Fails if no permission | ✅ Skips cleanup (env var) |
+
+**Environment Variables**:
+- `IgnoreErrorsOnSharedTags=On` - Skip tagging errors during creation
+- `SkipDestroyingSharedTags=On` - Skip tag cleanup during deletion
+- `ForceOpenshiftInfraIDRandomPart=<value>` - Control InfraID for Terraform
+
+---
+
+## Part 1: Custom AMI Creation
+
+### Purpose of Custom AMI
+
+OpenShift 4.16 requires a RHCOS (Red Hat CoreOS) AMI with custom security configurations:
+
+1. **KMS Encryption**: All EBS volumes encrypted with customer-managed KMS key
+2. **IMDSv2 Enforcement**: AWS Instance Metadata Service v2 required (configured at instance launch)
+3. **Region-Specific**: AMI must be in the same region as the cluster
+4. **RHCOS Version**: Must match OpenShift 4.16 compatibility
+
+### Why Custom AMI is Needed
+
+| Requirement | Standard AMI | Custom AMI |
+|------------|--------------|------------|
+| **Custom KMS Key** | ❌ Uses default EBS encryption | ✅ Uses specific KMS key |
+| **Compliance** | ⚠️ May not meet policies | ✅ Meets customer requirements |
+| **Security Posture** | Standard | Enhanced |
+| **IMDSv2** | Configured at launch | ✅ Configured at launch (via machine sets) |
+
+**Important Note**: IMDSv2 cannot be "baked into" an AMI. It's a **launch-time configuration** that you set in:
+- `install-config.yaml` for installation
+- Machine sets for compute nodes
+
+Both custom and standard AMIs require the same IMDSv2 configuration in Terraform/machine sets.
+
+### Step 1.1: Download RHCOS VMDK File
+
+Red Hat provides RHCOS VMDK files for creating custom AMIs. This is the **official Red Hat supported method**.
+
+```bash
+# Set your OpenShift version
+RHCOS_VERSION="4.16.51"  # Latest 4.16 release as of documentation date
+
+# Download RHCOS VMDK for AWS (x86_64)
+wget https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/4.16/${RHCOS_VERSION}/rhcos-${RHCOS_VERSION}-x86_64-aws.x86_64.vmdk.gz
+
+# Verify download
+ls -lh rhcos-${RHCOS_VERSION}-x86_64-aws.x86_64.vmdk.gz
+# Should show ~1GB compressed file
+
+# Optional: Verify checksum
+wget https://mirror.openshift.com/pub/openshift-v4/x86_64/dependencies/rhcos/4.16/${RHCOS_VERSION}/sha256sum.txt
+sha256sum -c sha256sum.txt --ignore-missing
+```
+
+**Reference**: [Red Hat OpenShift 4.16 - Custom RHCOS AMI Upload](https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#installation-aws-upload-custom-rhcos-ami_installing-aws-secret-region)
+
+### Step 1.2: Create S3 Bucket for VMDK Upload
+
+You need an S3 bucket to temporarily store the VMDK file during the import process:
+
+```bash
+# Set variables
+REGION="eu-west-1"
+S3_BUCKET_NAME="rhcos-import-${REGION}-$(date +%s)"
+
+# Create S3 bucket
+aws s3api create-bucket \
+  --bucket "$S3_BUCKET_NAME" \
+  --region "$REGION" \
+  --create-bucket-configuration LocationConstraint="$REGION"
+
+# Enable encryption on bucket
+aws s3api put-bucket-encryption \
+  --bucket "$S3_BUCKET_NAME" \
+  --server-side-encryption-configuration '{
+    "Rules": [{
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+      }
+    }]
+  }'
+
+# Save bucket name
+echo "S3_BUCKET_NAME=$S3_BUCKET_NAME" > custom-ami-build/env.sh
+```
+
+### Step 1.3: Upload RHCOS VMDK to S3
+
+```bash
+# Navigate to where you downloaded the VMDK
+cd custom-ami-build/
+
+# Upload VMDK to S3 (this may take 5-10 minutes)
+aws s3 cp rhcos-${RHCOS_VERSION}-x86_64-aws.x86_64.vmdk.gz \
+  s3://${S3_BUCKET_NAME}/ \
+  --region "$REGION"
+
+# Verify upload
+aws s3 ls s3://${S3_BUCKET_NAME}/ --region "$REGION"
+```
+
+### Step 1.4: Import VMDK as Encrypted EBS Snapshot
+
+This step imports the VMDK and creates an encrypted snapshot using your KMS key:
+
+```bash
+# Set your KMS key ARN or alias
+KMS_KEY_ID="arn:aws:kms:eu-west-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+# Or use alias: KMS_KEY_ID="alias/plaasma-ec2-cmk"
+
+# Create containers.json file for import
+cat > containers.json <<EOF
+{
+  "Description": "rhcos-${RHCOS_VERSION}-x86_64-aws.x86_64",
+  "Format": "vmdk",
+  "UserBucket": {
+    "S3Bucket": "${S3_BUCKET_NAME}",
+    "S3Key": "rhcos-${RHCOS_VERSION}-x86_64-aws.x86_64.vmdk.gz"
+  }
+}
+EOF
+
+# Import snapshot with KMS encryption
+IMPORT_TASK_ID=$(aws ec2 import-snapshot \
+  --region "$REGION" \
+  --description "RHCOS ${RHCOS_VERSION} for OpenShift 4.16" \
+  --disk-container "file://containers.json" \
+  --encrypted \
+  --kms-key-id "$KMS_KEY_ID" \
+  --query 'ImportTaskId' \
+  --output text)
+
+echo "Import Task ID: $IMPORT_TASK_ID"
+
+# Monitor import progress (takes 10-20 minutes)
+watch -n 30 aws ec2 describe-import-snapshot-tasks \
+  --region "$REGION" \
+  --import-task-ids "$IMPORT_TASK_ID"
+
+# Or check status without watch:
+aws ec2 describe-import-snapshot-tasks \
+  --region "$REGION" \
+  --import-task-ids "$IMPORT_TASK_ID" \
+  --query 'ImportSnapshotTasks[0].SnapshotTaskDetail.{Status:Status,Progress:Progress,SnapshotId:SnapshotId}'
+```
+
+Wait until `Status` shows **"completed"**.
+
+### Step 1.5: Register Custom AMI from Encrypted Snapshot
+
+```bash
+# Get the snapshot ID from completed import
+SNAPSHOT_ID=$(aws ec2 describe-import-snapshot-tasks \
+  --region "$REGION" \
+  --import-task-ids "$IMPORT_TASK_ID" \
+  --query 'ImportSnapshotTasks[0].SnapshotTaskDetail.SnapshotId' \
+  --output text)
+
+echo "Snapshot ID: $SNAPSHOT_ID"
+
+# Verify snapshot is encrypted with your KMS key
+aws ec2 describe-snapshots \
+  --region "$REGION" \
+  --snapshot-ids "$SNAPSHOT_ID" \
+  --query 'Snapshots[0].[Encrypted,KmsKeyId]' \
+  --output table
+
+# Register AMI from encrypted snapshot
+CUSTOM_AMI=$(aws ec2 register-image \
+  --region "$REGION" \
+  --name "rhcos-${RHCOS_VERSION}-x86_64-custom-kms" \
+  --description "RHCOS ${RHCOS_VERSION} for OpenShift 4.16 with KMS encryption" \
+  --architecture x86_64 \
+  --virtualization-type hvm \
+  --root-device-name '/dev/xvda' \
+  --block-device-mappings "DeviceName=/dev/xvda,Ebs={DeleteOnTermination=true,SnapshotId=${SNAPSHOT_ID}}" \
+  --ena-support \
+  --query 'ImageId' \
+  --output text)
+
+echo "Custom AMI ID: $CUSTOM_AMI"
+
+# Tag the AMI
+aws ec2 create-tags \
+  --region "$REGION" \
+  --resources "$CUSTOM_AMI" \
+  --tags \
+    Key=Name,Value="RHCOS ${RHCOS_VERSION} OpenShift 4.16 Custom" \
+    Key=OS,Value=RHCOS \
+    Key=OCP-Version,Value=4.16 \
+    Key=Encrypted,Value=KMS \
+    Key=Compliance,Value=Required
+```
+
+### Step 1.6: Verify the Custom AMI
+
+```bash
+# Verify AMI is ready
+aws ec2 describe-images \
+  --region "$REGION" \
+  --image-ids "$CUSTOM_AMI" \
+  --query 'Images[0].[ImageId,Name,State,Architecture]' \
+  --output table
+
+# Verify KMS encryption on snapshot
+SNAPSHOT_ID=$(aws ec2 describe-images \
+  --region "$REGION" \
+  --image-ids "$CUSTOM_AMI" \
+  --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' \
+  --output text)
+
+aws ec2 describe-snapshots \
+  --region "$REGION" \
+  --snapshot-ids "$SNAPSHOT_ID" \
+  --query 'Snapshots[0].[Encrypted,KmsKeyId]' \
+  --output table
+
+# Should show: Encrypted=True, KmsKeyId=your-kms-key-arn
+```
+
+### Step 1.7: Document the AMI ID
+
+Save the AMI ID for use in Terraform configuration:
+
+```bash
+# Save to a file for reference
+echo "CUSTOM_AMI=$CUSTOM_AMI" > custom-ami.env
+echo "REGION=$REGION" >> custom-ami.env
+echo "RHCOS_VERSION=$RHCOS_VERSION" >> custom-ami.env
+
+# You'll use this AMI ID in the terraform tfvars file:
+# ami = "ami-0abcdef1234567890"
+# aws_worker_iam_id = "ami-0abcdef1234567890"
+```
+
+### Step 1.8: Cleanup S3 Bucket (Optional)
+
+After successful AMI creation, you can delete the S3 bucket:
+
+```bash
+# Delete VMDK from S3
+aws s3 rm s3://${S3_BUCKET_NAME}/rhcos-${RHCOS_VERSION}-x86_64-aws.x86_64.vmdk.gz
+
+# Delete bucket
+aws s3api delete-bucket --bucket "$S3_BUCKET_NAME" --region "$REGION"
+
+# Keep local VMDK file for future use or delete to save space
+# rm rhcos-${RHCOS_VERSION}-x86_64-aws.x86_64.vmdk.gz
+```
+
+### Understanding IMDSv2 Configuration
+
+**Critical Point**: IMDSv2 is **NOT stored in the AMI**. It's a **launch-time instance configuration**.
+
+You configure IMDSv2 enforcement in two places:
+
+**1. During Installation** - In `install-config.yaml`:
+```yaml
+controlPlane:
+  platform:
+    aws:
+      metadataService:
+        authentication: Required  # Enforces IMDSv2
+compute:
+  platform:
+    aws:
+      metadataService:
+        authentication: Required  # Enforces IMDSv2
+```
+
+**2. For Machine Sets** - In Terraform templates or machine set manifests:
+```yaml
+spec:
+  template:
+    spec:
+      providerSpec:
+        value:
+          metadataServiceOptions:
+            authentication: Required  # Enforces IMDSv2
+```
+
+Both the custom AMI and Red Hat's default AMI require the same IMDSv2 configuration. The custom AMI only provides **KMS encryption**
+
+---
+
+## Part 2: Building the Custom OpenShift Installer
+
+### Overview of Modifications
+
+We modify 4 files in the OpenShift installer source code:
+
+| File | Purpose | Lines Changed |
+|------|---------|--------------|
+| `pkg/asset/cluster/aws/aws.go` | Skip subnet tagging errors | +7 |
+| `pkg/asset/installconfig/clusterid.go` | Control InfraID generation | +5 |
+| `pkg/destroy/aws/shared.go` | Skip tag cleanup on destroy | +10 |
+| `pkg/asset/releaseimage/default.go` | Pin to OCP 4.16.9 | +1 |
+
+### Step 2.1: Install Go 1.22.x
+
+OpenShift 4.16 requires Go 1.22 or later:
+
+```bash
+# Check current Go version
+go version
+
+# If you need to install/update Go:
+# Method 1: Using official binaries (Linux/macOS)
+GOVERSION="1.22.5"
+wget "https://go.dev/dl/go${GOVERSION}.linux-amd64.tar.gz"
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf "go${GOVERSION}.linux-amd64.tar.gz"
+
+# Add to PATH (add to ~/.bashrc or ~/.zshrc)
+export PATH=$PATH:/usr/local/go/bin
+export GOPATH=$HOME/go
+export PATH=$PATH:$GOPATH/bin
+
+# Verify installation
+go version
+# Should output: go version go1.22.5 linux/amd64
+```
+
+### Step 2.2: Clone OpenShift Installer Repository
+
+```bash
+# Create a working directory
+mkdir -p ~/openshift-build
+cd ~/openshift-build
+
+# Clone the installer repository for release 4.16
+git clone https://github.com/openshift/installer.git -b release-4.16
+cd installer
+
+# Verify you're on the correct branch
+git branch
+# Should show: * release-4.16
+
+# Check the latest commit (should be recent)
+git log -1 --oneline
+```
+
+### Step 2.3: Apply Code Modifications
+
+Now copy the modified files from this repository:
+
+```bash
+# Assuming you're in ~/openshift-build/installer
+# and you have the Openshift_4.16 folder available
+
+MODIFICATIONS_DIR="/path/to/Openshift_4.16/openshift-installer-modifications.4.16"
+
+# Backup original files
+for file in \
+  "pkg/asset/cluster/aws/aws.go" \
+  "pkg/asset/installconfig/clusterid.go" \
+  "pkg/destroy/aws/shared.go" \
+  "pkg/asset/releaseimage/default.go"; do
+  cp "$file" "${file}.original"
+done
+
+# Copy modified files
+cp "${MODIFICATIONS_DIR}/pkg/asset/cluster/aws/aws.go" pkg/asset/cluster/aws/aws.go
+cp "${MODIFICATIONS_DIR}/pkg/asset/installconfig/clusterid.go" pkg/asset/installconfig/clusterid.go
+cp "${MODIFICATIONS_DIR}/pkg/destroy/aws/shared.go" pkg/destroy/aws/shared.go
+cp "${MODIFICATIONS_DIR}/pkg/asset/releaseimage/default.go" pkg/asset/releaseimage/default.go
+
+# Verify modifications were applied
+echo "Checking for modifications..."
+grep -n "IgnoreErrorsOnSharedTags" pkg/asset/cluster/aws/aws.go
+grep -n "ForceOpenshiftInfraIDRandomPart" pkg/asset/installconfig/clusterid.go
+grep -n "SkipDestroyingSharedTags" pkg/destroy/aws/shared.go
+grep -n "4.16.9" pkg/asset/releaseimage/default.go
+```
+
+### Step 2.4: Build the Custom Installer
+
+```bash
+# Still in ~/openshift-build/installer
+
+# Clean any previous builds
+rm -rf bin/
+
+# Build the installer using the official build script
+./hack/build.sh
+
+# This will:
+# 1. Download Go dependencies
+# 2. Compile the installer
+# 3. Place binary in bin/openshift-install
+
+# Wait for build to complete (5-10 minutes)
+# Output should end with:
+# + go build -mod=vendor -ldflags ... -tags ... -o bin/openshift-install ./cmd/openshift-install
+```
+
+### Step 2.5: Verify the Custom Installer
+
+```bash
+# Check the binary was created
+ls -lh bin/openshift-install
+# Should show: -rwxr-xr-x ... bin/openshift-install (size ~200-300 MB)
+
+# Test the binary
+bin/openshift-install version
+# Should output:
+# bin/openshift-install 4.16.9
+# built from commit ...
+# release image quay.io/openshift-release-dev/ocp-release:4.16.9-x86_64
+# release architecture amd64
+
+# Test help
+bin/openshift-install create --help
+```
+
+### Step 2.6: Deploy the Custom Installer
+
+```bash
+# Copy to terraform directory
+cp bin/openshift-install /path/to/Openshift_4.16/terraform-openshift-v18/
+
+# Or install globally (optional)
+sudo cp bin/openshift-install /usr/local/bin/openshift-install-4.16
+
+# Set execute permissions
+chmod +x /path/to/Openshift_4.16/terraform-openshift-v18/openshift-install
+
+# Verify it's accessible
+cd /path/to/Openshift_4.16/terraform-openshift-v18/
+./openshift-install version
+```
+
+### Understanding the Modifications
+
+#### Modification 1: `pkg/asset/cluster/aws/aws.go`
+
+**Location**: Line 81-84
+
+```go
+ignore := os.Getenv("IgnoreErrorsOnSharedTags")
+if ignore != "" {
+    return nil
+}
+```
+
+**What it does**: When tagging shared subnets fails (due to lack of permissions), the installer normally aborts. This modification checks for an environment variable and continues installation if set.
+
+**Usage**:
+```bash
+export IgnoreErrorsOnSharedTags=On
+./openshift-install create cluster --dir=installer-files
+```
+
+#### Modification 2: `pkg/asset/installconfig/clusterid.go`
+
+**Location**: Line 79-82
+
+```go
+rand := os.Getenv("ForceOpenshiftInfraIDRandomPart")
+if rand == "" {
+    rand = utilrand.String(randomLen)
+}
+return fmt.Sprintf("%s-%s", base, rand)
+```
+
+**What it does**: Normally, the installer generates a random 5-character suffix for the InfraID (e.g., `mycluster-a1b2c`). This modification allows you to specify the exact suffix, which is critical for Terraform state management.
+
+**Usage**:
+```bash
+export ForceOpenshiftInfraIDRandomPart="d44a5"
+./openshift-install create cluster --dir=installer-files
+# Results in InfraID: mycluster-d44a5
+```
+
+#### Modification 3: `pkg/destroy/aws/shared.go`
+
+**Location**: Line 56-59 and 118-124
+
+```go
+skip := os.Getenv("SkipDestroyingSharedTags")
+if skip != "" {
+    return nil
+}
+
+// ... later ...
+
+ignore := os.Getenv("IgnoreErrorsOnSharedTags")
+if ignore == "" {
+    nextTagClients = append(nextTagClients, tagClient)
+}
+```
+
+**What it does**: During cluster deletion, the installer tries to remove tags from shared resources. This can fail for the same permission reasons. These modifications allow graceful cleanup.
+
+**Usage**:
+```bash
+export SkipDestroyingSharedTags=On
+./openshift-install destroy cluster --dir=installer-files
+```
+
+#### Modification 4: `pkg/asset/releaseimage/default.go`
+
+**Location**: Line 24
+
+```go
+defaultReleaseImageOriginal = "quay.io/openshift-release-dev/ocp-release:4.16.9-x86_64"
+```
+
+**What it does**: Pins the installer to always use OpenShift 4.16.9, ensuring consistency across deployments.
+
+---
+
+## Part 3: Terraform Configuration
+
+### Terraform Structure (v18)
+
+The `terraform-openshift-v18` folder contains the infrastructure-as-code automation:
+
+```
+terraform-openshift-v18/
+├── backend.tf                 # S3 backend for terraform state
+├── providers.tf               # AWS provider configuration
+├── variables.tf               # Input variables definition
+├── main.tf                    # Main infrastructure resources
+├── iam.tf                     # IAM roles and policies
+├── ssh_key.tf                 # SSH key pair generation
+├── s3.tf                      # S3 buckets for OIDC
+├── s3.dynamo.tf               # DynamoDB for state locking
+├── main.openshift.tf          # OpenShift installation orchestration
+├── openshift.prepare.tf       # Manifest generation
+├── openshift.install.tf       # Cluster installation execution
+├── openshift.day2.tf          # Post-installation configuration
+├── templates.tf               # Install-config.yaml templates
+├── output.tf                  # Output values
+├── create-cluster.sh          # Cluster creation wrapper
+├── delete-cluster.sh          # Cluster deletion wrapper
+├── get-ingress-lb.sh          # Extract ingress load balancer
+├── save-cluster-states.sh     # Save cluster artifacts to S3
+├── wait.sh                    # Wait for conditions helper
+└── env/                       # Environment-specific tfvars
+    └── example.tfvars         # Example configuration
+```
+
+### Step 3.1: Update Variables File
+
+Create your cluster-specific tfvars file:
+
+**File**: `terraform-openshift-v18/env/my-cluster.tfvars`
+
+```hcl
+# AWS Account Configuration
+account_id = "123456789012"
+region     = "eu-west-1"
+vpc_id     = "vpc-0123456789abcdef0"
+
+# IAM Permission Boundaries
+ccoe_boundary = "arn:aws:iam::123456789012:policy/CCOE-boundary-iam-policy"
+
+# OpenShift Configuration
+release_image = "quay.io/openshift-release-dev/ocp-release:4.16.9-x86_64"
+cluster_name  = "my-ocp-cluster"
+
+# InfraID - This must match what you'll set in ForceOpenshiftInfraIDRandomPart
+infra_random_id = "abc12"
+
+# Custom AMI (from Part 1)
+ami = "ami-0abcdef1234567890"  # Your custom AMI ID
+
+# Networking
+domain                  = "example.aws.internal.cloud.company.com"
+hosted_zone             = "Z09712621HQM0QJETDLGV"
+aws_private_subnets     = [
+  "subnet-00d6c2c8838022ea5",
+  "subnet-05d4f90204e618402",
+  "subnet-0c61e630d0c480f9f"
+]
+
+# Network CIDR Configuration
+service_network_cidr        = "172.30.0.0/16"
+machine_network_cidr        = ["10.36.50.0/23"]
+cluster_network_cidr        = "172.20.0.0/14"
+cluster_network_host_prefix = "23"
+
+# Proxy Configuration (if needed)
+proxy_config = {
+  enabled    = true
+  httpProxy  = "http://proxy.example.com:8080"
+  httpsProxy = "http://proxy.example.com:8080"
+  noProxy    = "127.0.0.1,localhost,169.254.169.254,10.36.0.0/16,172.20.0.0/14,172.30.0.0/16,company.com,ec2.eu-west-1.amazonaws.com,elasticloadbalancing.eu-west-1.amazonaws.com,s3.eu-west-1.amazonaws.com"
+}
+
+# Availability Zones
+aws_worker_availability_zones = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+
+# Pull Secret
+openshift_pull_secret = "openshift/openshift_pull_secret.json"
+
+# SSH Key (optional - leave empty to generate)
+openshift_ssh_key = ""
+
+# S3 Bucket for OIDC
+s3_bucket_name_oidc = "ocp-oidc-my-cluster"
+
+# IAM Role Names
+control_plane_role_name   = "ocpcontrolplane-my-cluster-iam-role"
+aws_iam_role_compute_node = "ocpcontrolplane-my-cluster-iam-role"
+aws_worker_iam_role       = "ocpworkernode-my-cluster-iam-role"
+ocpcontrolplane_policy    = "ocpcontrolplane-policy-my-cluster-iam-policy"
+ocpworkernode_policy      = "ocpworkernode-policy-my-cluster-iam-policy"
+
+# KMS Encryption
+kms_ec2_alias = "alias/my-cluster-ec2-cmk"
+
+# Master Node Configuration
+master_count             = 3
+aws_master_instance_type = "m5.2xlarge"
+aws_master_volume_type   = "gp3"
+aws_master_volume_size   = "300"
+aws_master_volume_iops   = "4000"
+
+# Worker Node Configuration
+worker_count                 = 3
+aws_worker_instance_type     = "c5.4xlarge"
+aws_worker_root_volume_type  = "gp3"
+aws_worker_root_volume_size  = "300"
+aws_worker_root_volume_iops  = "2000"
+aws_worker_iam_id            = "ami-0abcdef1234567890"  # Same as main AMI
+
+# Infra Node Configuration (Day 2 - optional)
+aws_infra_count_per_availability_zone = "1"
+aws_infra_instance_type               = "c5.2xlarge"
+aws_infra_root_volume_type            = "gp3"
+aws_infra_root_volume_size            = "300"
+aws_infra_root_volume_iops            = "2000"
+
+# Resource Tags
+tags = {
+  "Environment"   = "Production"
+  "ManagedBy"     = "Terraform"
+  "Project"       = "OpenShift"
+  "Owner"         = "Platform-Team"
+  "CostCenter"    = "12345"
+  "Compliance"    = "SOC2"
+}
+
+# Terraform State (used in backend.tf)
+bucket_state_file = "openshift-my-cluster-tfstate"
+```
+
+### Step 3.2: Prepare Pull Secret
+
+You need a Red Hat pull secret to download OpenShift images:
+
+```bash
+# Create openshift directory
+mkdir -p terraform-openshift-v18/openshift
+
+# Option 1: Download from Red Hat
+# Visit: https://console.redhat.com/openshift/install/pull-secret
+# Save the pull secret to: terraform-openshift-v18/openshift/openshift_pull_secret.json
+
+# Option 2: If you have a pull secret file already
+cp /path/to/pull-secret.txt terraform-openshift-v18/openshift/openshift_pull_secret.json
+
+# Verify format (should be valid JSON)
+cat terraform-openshift-v18/openshift/openshift_pull_secret.json | jq .
+```
+
+### Step 3.3: Configure Backend (Optional)
+
+If using remote state:
+
+**File**: `terraform-openshift-v18/backend.tf`
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "openshift-my-cluster-tfstate"
+    key            = "terraform.tfstate"
+    region         = "eu-west-1"
+    dynamodb_table = "openshift-my-cluster-tfstate-lock"
+    encrypt        = true
+  }
+}
+```
+
+Create the backend resources first:
+
+```bash
+# Set variables
+BUCKET_NAME="openshift-my-cluster-tfstate"
+DYNAMODB_TABLE="openshift-my-cluster-tfstate-lock"
+REGION="eu-west-1"
+
+# Create S3 bucket
+aws s3api create-bucket \
+  --bucket "$BUCKET_NAME" \
+  --region "$REGION" \
+  --create-bucket-configuration LocationConstraint="$REGION"
+
+# Enable versioning
+aws s3api put-bucket-versioning \
+  --bucket "$BUCKET_NAME" \
+  --versioning-configuration Status=Enabled
+
+# Enable encryption
+aws s3api put-bucket-encryption \
+  --bucket "$BUCKET_NAME" \
+  --server-side-encryption-configuration '{
+    "Rules": [{
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+      }
+    }]
+  }'
+
+# Create DynamoDB table
+aws dynamodb create-table \
+  --table-name "$DYNAMODB_TABLE" \
+  --attribute-definitions AttributeName=LockID,AttributeType=S \
+  --key-schema AttributeName=LockID,KeyType=HASH \
+  --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+  --region "$REGION"
+```
+
+### Step 3.4: Update create-cluster.sh
+
+Ensure the create script uses the custom installer:
+
+**File**: `terraform-openshift-v18/create-cluster.sh`
+
+```bash
+#!/bin/bash
+
+# Set environment variables for custom installer
+export IgnoreErrorsOnSharedTags=On
+export ForceOpenshiftInfraIDRandomPart="${INFRA_RANDOM_ID}"
+
+# Run the custom OpenShift installer
+./openshift-install create cluster --dir=installer-files --log-level=debug
+```
+
+### Step 3.5: Update delete-cluster.sh
+
+**File**: `terraform-openshift-v18/delete-cluster.sh`
+
+```bash
+#!/bin/bash
+
+# Set environment variables for custom installer
+export SkipDestroyingSharedTags=On
+
+# Run the custom OpenShift installer destroy
+./openshift-install destroy cluster --dir=installer-files --log-level=debug
+```
+
+---
+
+## Part 4: Step-by-Step Installation
+
+### Prerequisites Checklist
+
+Before starting the installation, verify:
+
+- ✅ Custom AMI created (Part 1)
+- ✅ Custom installer built (Part 2)
+- ✅ Terraform configured (Part 3)
+- ✅ AWS credentials configured (`aws configure` or IAM role)
+- ✅ Pull secret obtained
+- ✅ Network connectivity (VPC, subnets, route tables)
+- ✅ DNS hosted zone exists
+- ✅ KMS key available
+
+### Step 4.1: Initialize Terraform
+
+```bash
+cd terraform-openshift-v18/
+
+# Initialize Terraform (download providers)
+terraform init
+
+# Output should show:
+# Terraform has been successfully initialized!
+```
+
+### Step 4.2: Create Terraform Plan
+
+```bash
+# Generate execution plan
+terraform plan -var-file="env/my-cluster.tfvars" -out=tfplan
+
+# Review the plan carefully
+# Should show resources to be created:
+# - S3 buckets
+# - IAM roles and policies
+# - SSH key pair
+# - OpenShift cluster installation (via null_resources)
+
+# Estimated resources: ~30-50 resources
+```
+
+### Step 4.3: Apply Terraform Configuration
+
+```bash
+# Apply the plan
+terraform apply tfplan
+
+# This will:
+# 1. Create IAM roles with permission boundaries
+# 2. Create S3 bucket for OIDC provider
+# 3. Generate SSH key pair
+# 4. Create OpenShift manifests
+# 5. Launch OpenShift installer (in background)
+# 6. Wait for cluster to be ready
+# 7. Configure ingress DNS record
+
+# Installation takes 30-45 minutes
+# Monitor progress in output/openshift-install.log
+```
+
+### Step 4.4: Monitor Installation Progress
+
+Open a new terminal and watch the installation logs:
+
+```bash
+cd terraform-openshift-v18/
+
+# Follow installer logs in real-time
+tail -f output/openshift-install.log
+
+# Key milestones to watch for:
+# 1. "Creating infrastructure resources..."
+# 2. "Waiting up to 20m0s for the bootstrap control plane to initialize..."
+# 3. "It is now safe to remove the bootstrap resources"
+# 4. "Install complete!"
+```
+
+### Step 4.5: Verify Installation
+
+Once Terraform completes successfully:
+
+```bash
+# Set KUBECONFIG
+export KUBECONFIG="$(pwd)/installer-files/auth/kubeconfig"
+
+# Check cluster version
+oc get clusterversion
+
+# Expected output:
+# NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+# version   4.16.9    True        False         5m      Cluster version is 4.16.9
+
+# Check all nodes are ready
+oc get nodes
+
+# Expected output:
+# NAME                            STATUS   ROLES                  AGE   VERSION
+# ip-10-36-50-10.eu-west-1.co...  Ready    control-plane,master   20m   v1.29.x
+# ip-10-36-50-11.eu-west-1.co...  Ready    control-plane,master   20m   v1.29.x
+# ip-10-36-50-12.eu-west-1.co...  Ready    control-plane,master   20m   v1.29.x
+# ip-10-36-50-20.eu-west-1.co...  Ready    worker                 15m   v1.29.x
+# ip-10-36-50-21.eu-west-1.co...  Ready    worker                 15m   v1.29.x
+# ip-10-36-50-22.eu-west-1.co...  Ready    worker                 15m   v1.29.x
+
+# Check cluster operators
+oc get co
+
+# All operators should show AVAILABLE=True, PROGRESSING=False, DEGRADED=False
+
+# Get console URL
+oc whoami --show-console
+
+# Get admin credentials
+cat installer-files/auth/kubeadmin-password
+```
+
+### Step 4.6: Access the Cluster
+
+```bash
+# Web Console
+echo "Console URL: https://console-openshift-console.apps.${CLUSTER_NAME}.${DOMAIN}"
+echo "Username: kubeadmin"
+echo "Password: $(cat installer-files/auth/kubeadmin-password)"
+
+# CLI Access
+oc login -u kubeadmin -p "$(cat installer-files/auth/kubeadmin-password)" \
+  "https://api.${CLUSTER_NAME}.${DOMAIN}:6443"
+```
+
+### Step 4.7: Verify Custom AMI Usage
+
+```bash
+# Check that nodes are using the custom AMI
+oc get nodes -o json | jq -r '.items[].metadata.annotations["machine.openshift.io/instance-type"]'
+
+# Describe a node to see AMI ID
+NODE_NAME=$(oc get nodes -o jsonpath='{.items[0].metadata.name}')
+oc describe node "$NODE_NAME" | grep -i "ProviderID"
+
+# Extract instance ID and verify AMI
+INSTANCE_ID=$(oc get node "$NODE_NAME" -o jsonpath='{.spec.providerID}' | cut -d'/' -f5)
+aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].ImageId' --output text
+
+# Should match your custom AMI: ami-0abcdef1234567890
+```
+
+### Step 4.8: Verify IMDSv2 Configuration
+
+```bash
+# Check that all instances have IMDSv2 enforced
+CLUSTER_TAG="kubernetes.io/cluster/${CLUSTER_NAME}-${INFRA_RANDOM_ID}"
+
+aws ec2 describe-instances \
+  --filters "Name=tag:${CLUSTER_TAG},Values=owned" \
+  --query 'Reservations[].Instances[].[InstanceId,MetadataOptions.HttpTokens]' \
+  --output table
+
+# All instances should show "required" for HttpTokens
+```
+
+### Step 4.9: Verify KMS Encryption
+
+```bash
+# Check EBS volumes are encrypted with correct KMS key
+aws ec2 describe-volumes \
+  --filters "Name=tag:${CLUSTER_TAG},Values=owned" \
+  --query 'Volumes[].[VolumeId,Encrypted,KmsKeyId]' \
+  --output table
+
+# All volumes should show Encrypted=true with your KMS key ARN
+```
+
+---
+
+## Part 5: Disconnected Installation
+
+### Overview
+
+If your environment is air-gapped (no direct internet access), you need to mirror OpenShift images to a local registry.
+
+### Prerequisites for Disconnected Install
+
+- Internal container registry (e.g., Nexus, Harbor, Artifactory)
+- Bastion host with internet access (for mirroring)
+- Registry authentication configured
+- Sufficient storage (~50-100 GB for OpenShift 4.16)
+
+### Step 5.1: Set Up Mirror Registry
+
+On a system with internet access:
+
+```bash
+# Download oc-mirror plugin
+OC_MIRROR_VERSION="latest"
+wget "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/${OC_MIRROR_VERSION}/oc-mirror.tar.gz"
+tar -xzf oc-mirror.tar.gz
+sudo mv oc-mirror /usr/local/bin/
+chmod +x /usr/local/bin/oc-mirror
+
+# Configure mirror registry credentials
+# Set your registry details
+MIRROR_REGISTRY="registry.internal.company.com"
+MIRROR_REGISTRY_USER="admin"
+MIRROR_REGISTRY_PASS="password123"
+
+# Create credentials file
+mkdir -p ~/.docker
+cat > ~/.docker/config.json <<EOF
+{
+  "auths": {
+    "${MIRROR_REGISTRY}": {
+      "auth": "$(echo -n ${MIRROR_REGISTRY_USER}:${MIRROR_REGISTRY_PASS} | base64 -w0)"
+    }
+  }
+}
+EOF
+
+# Also add Red Hat registry credentials (from pull secret)
+cat openshift_pull_secret.json | jq . > ~/.docker/config.json.tmp
+jq -s '.[0] * .[1]' ~/.docker/config.json ~/.docker/config.json.tmp > ~/.docker/config.json
+rm ~/.docker/config.json.tmp
+```
+
+### Step 5.2: Mirror OpenShift Images
+
+```bash
+# Create image set configuration
+cat > imageset-config.yaml <<EOF
+apiVersion: mirror.openshift.io/v1alpha2
+kind: ImageSetConfiguration
+storageConfig:
+  local:
+    path: ./mirror-images
+mirror:
+  platform:
+    channels:
+      - name: stable-4.16
+        minVersion: 4.16.9
+        maxVersion: 4.16.9
+  operators:
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.16
+      packages:
+        - name: kubernetes-nmstate-operator
+        - name: local-storage-operator
+        - name: odf-operator
+        - name: rhacs-operator
+  additionalImages:
+    - name: registry.redhat.io/ubi9/ubi:latest
+  helm: {}
+EOF
+
+# Execute mirror operation
+oc-mirror --config=imageset-config.yaml file://mirror-images
+
+# This will:
+# 1. Download all OpenShift 4.16.9 images
+# 2. Download specified operators
+# 3. Create a portable archive
+
+# Output: mirror_seq1_000000.tar (large file ~50GB)
+```
+
+### Step 5.3: Transfer and Upload to Internal Registry
+
+```bash
+# Transfer archive to air-gapped environment (USB, secure transfer, etc.)
+# Example using scp:
+scp mirror_seq1_000000.tar bastion.internal.company.com:/tmp/
+
+# On the air-gapped bastion host:
+ssh bastion.internal.company.com
+
+# Extract and upload to internal registry
+cd /tmp
+tar -xvf mirror_seq1_000000.tar
+
+# Upload to registry
+oc-mirror --from=file://mirror-images \
+  docker://${MIRROR_REGISTRY}/openshift4 \
+  --dest-skip-tls  # if using self-signed certs
+
+# This pushes all images to your internal registry
+```
+
+### Step 5.4: Configure Disconnected Install
+
+Update your tfvars for disconnected installation:
+
+```hcl
+# In env/my-cluster.tfvars
+
+# Use mirrored release image
+release_image = "registry.internal.company.com/openshift4/openshift/release-images:4.16.9-x86_64"
+
+# Update pull secret to include internal registry
+# Edit openshift/openshift_pull_secret.json to add:
+{
+  "auths": {
+    "registry.internal.company.com": {
+      "auth": "<base64-encoded-user:pass>"
+    },
+    "quay.io": {...},  # Keep existing entries
+    "registry.redhat.io": {...}
+  }
+}
+```
+
+### Step 5.5: Create ImageContentSourcePolicy
+
+Create a file to tell OpenShift where to find mirrored images:
+
+**File**: `terraform-openshift-v18/openshift/imageContentSourcePolicy.yaml`
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: mirror-ocp
+spec:
+  repositoryDigestMirrors:
+  - mirrors:
+    - registry.internal.company.com/openshift4/openshift/release
+    source: quay.io/openshift-release-dev/ocp-release
+  - mirrors:
+    - registry.internal.company.com/openshift4/openshift/release-images
+    source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+```
+
+### Step 5.6: Update install-config.yaml Template
+
+In `templates.tf`, add imageContentSources section:
+
+```yaml
+# Inside install-config.yaml template
+imageContentSources:
+- mirrors:
+  - registry.internal.company.com/openshift4/openshift/release
+  source: quay.io/openshift-release-dev/ocp-release
+- mirrors:
+  - registry.internal.company.com/openshift4/openshift/release-images
+  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+```
+
+### Step 5.7: Install in Disconnected Mode
+
+```bash
+# Ensure proxy is configured if required
+export HTTP_PROXY=http://proxy.internal.company.com:8080
+export HTTPS_PROXY=http://proxy.internal.company.com:8080
+export NO_PROXY=127.0.0.1,localhost,169.254.169.254,.internal.company.com,.cluster.local
+
+# Run Terraform as usual
+terraform apply -var-file="env/my-cluster.tfvars"
+
+# The installer will pull all images from the internal registry
+```
+
+### Verification for Disconnected Install
+
+```bash
+# Verify image pull sources
+oc get imageContentSourcePolicy
+
+# Check that pods are using mirrored images
+oc get pods -A -o json | jq -r '.items[].spec.containers[].image' | sort -u | grep registry.internal.company.com
+
+# Should see images pulled from your internal registry
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+#### Issue 1: Installer Fails with Tagging Errors
+
+**Error Message:**
+```
+Error: Error creating tags for resource [...]: UnauthorizedOperation: You are not authorized to perform this operation
+```
+
+**Solution:**
+```bash
+# Verify environment variables are set
+export IgnoreErrorsOnSharedTags=On
+export ForceOpenshiftInfraIDRandomPart="abc12"
+
+# Check they're visible to Terraform
+echo $IgnoreErrorsOnSharedTags
+
+# Ensure create-cluster.sh exports them
+cat create-cluster.sh
+```
+
+#### Issue 2: AMI Not Found
+
+**Error Message:**
+```
+Error: InvalidAMIID.NotFound: The image id '[ami-xxxxx]' does not exist
+```
+
+**Solution:**
+```bash
+# Verify AMI exists in the correct region
+aws ec2 describe-images --region eu-west-1 --image-ids ami-xxxxx
+
+# Check AMI is not private/shared incorrectly
+aws ec2 describe-image-attribute --region eu-west-1 --image-id ami-xxxxx --attribute launchPermission
+
+# Update tfvars with correct AMI ID
+vi env/my-cluster.tfvars
+```
+
+#### Issue 3: Bootstrap Timeout
+
+**Error Message:**
+```
+Error: Timeout waiting for bootstrap complete
+```
+
+**Solution:**
+```bash
+# SSH to bootstrap node (if possible)
+BOOTSTRAP_IP=$(aws ec2 describe-instances --filters \
+  "Name=tag:Name,Values=*bootstrap*" \
+  --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+
+ssh -i installer-files/.ssh/id_rsa core@$BOOTSTRAP_IP
+
+# Check bootstrap logs
+journalctl -u bootkube.service
+
+# Check if ignition was applied
+sudo cat /etc/ignition-machine-config.json | jq .
+
+# Common causes:
+# - Proxy configuration incorrect
+# - Pull secret invalid
+# - AMI issues (IMDSv2 misconfiguration)
+```
+
+#### Issue 4: Nodes Not Joining
+
+**Error Message:**
+```
+Node <node-name> not ready
+```
+
+**Solution:**
+```bash
+# Check pending CSRs
+oc get csr
+
+# Approve pending CSRs
+oc get csr -o name | xargs oc adm certificate approve
+
+# Check node logs
+oc debug node/<node-name>
+chroot /host
+journalctl -u kubelet
+```
+
+#### Issue 5: KMS Key Permission Denied
+
+**Error Message:**
+```
+Error: EncryptedVolume.NotAuthorized: You are not authorized to use this KMS key
+```
+
+**Solution:**
+```bash
+# Verify IAM role has KMS permissions
+KMS_KEY_ID="arn:aws:kms:eu-west-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+
+# Check key policy allows the IAM role
+aws kms describe-key --key-id "$KMS_KEY_ID" --query 'KeyMetadata.KeyManager'
+
+# Add IAM role to key policy
+aws kms create-grant \
+  --key-id "$KMS_KEY_ID" \
+  --grantee-principal "arn:aws:iam::123456789012:role/ocpcontrolplane-my-cluster-iam-role" \
+  --operations "Encrypt" "Decrypt" "GenerateDataKey" "DescribeKey"
+```
+
+#### Issue 6: Disconnected Install - ImagePullBackOff
+
+**Error Message:**
+```
+ImagePullBackOff: Failed to pull image "quay.io/openshift-release-dev/..."
+```
+
+**Solution:**
+```bash
+# Verify ImageContentSourcePolicy is applied
+oc get imageContentSourcePolicy -o yaml
+
+# Check node can resolve internal registry
+oc debug node/<node-name>
+chroot /host
+nslookup registry.internal.company.com
+
+# Verify pull secret includes internal registry
+oc get secret pull-secret -n openshift-config -o json | jq -r '.data.".dockerconfigjson"' | base64 -d | jq .
+
+# Update pull secret if needed
+oc set data secret/pull-secret -n openshift-config --from-file=.dockerconfigjson=<path-to-updated-secret>
+```
+
+#### Issue 7: Terraform State Lock
+
+**Error Message:**
+```
+Error: Error locking state: Error acquiring the state lock
+```
+
+**Solution:**
+```bash
+# List locks
+aws dynamodb scan --table-name openshift-my-cluster-tfstate-lock --region eu-west-1
+
+# Force unlock (only if you're sure no other terraform is running)
+terraform force-unlock <LOCK_ID>
+
+# Or delete lock from DynamoDB
+aws dynamodb delete-item \
+  --table-name openshift-my-cluster-tfstate-lock \
+  --key '{"LockID": {"S": "<LOCK_ID>"}}' \
+  --region eu-west-1
+```
+
+### Debugging Commands
+
+```bash
+# Check installer logs
+tail -100 output/openshift-install.log
+
+# Check Terraform state
+terraform state list
+
+# Get specific resource state
+terraform state show null_resource.openshift_install
+
+# Check AWS resources for cluster
+CLUSTER_TAG="kubernetes.io/cluster/${CLUSTER_NAME}-${INFRA_RANDOM_ID}"
+aws ec2 describe-instances --filters "Name=tag:${CLUSTER_TAG},Values=owned" --output table
+aws elb describe-load-balancers --output json | jq -r '.LoadBalancerDescriptions[] | select(.LoadBalancerName | contains("'"${CLUSTER_NAME}"'"))'
+
+# Check OpenShift logs
+export KUBECONFIG=installer-files/auth/kubeconfig
+oc adm must-gather
+
+# Get cluster version details
+oc get clusterversion -o yaml
+
+# Check cluster operators status
+oc get co -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[?(@.type==\"Available\")].status
+```
+
+---
+
+## Appendix
+
+### A. File Reference
+
+#### Modified Go Files (OpenShift 4.16)
+
+1. **`pkg/asset/cluster/aws/aws.go`**
+   - **Change**: Added `IgnoreErrorsOnSharedTags` environment variable check
+   - **Lines**: 81-84
+   - **Purpose**: Skip subnet tagging errors
+
+2. **`pkg/asset/installconfig/clusterid.go`**
+   - **Change**: Added `ForceOpenshiftInfraIDRandomPart` environment variable
+   - **Lines**: 79-82
+   - **Purpose**: Control InfraID suffix
+
+3. **`pkg/destroy/aws/shared.go`**
+   - **Change**: Added `SkipDestroyingSharedTags` and `IgnoreErrorsOnSharedTags` checks
+   - **Lines**: 56-59, 118-124
+   - **Purpose**: Skip tag cleanup on destroy
+
+4. **`pkg/asset/releaseimage/default.go`**
+   - **Change**: Updated default release image to 4.16.9
+   - **Line**: 24
+   - **Purpose**: Pin OpenShift version
+
+### B. Environment Variables Reference
+
+| Variable | Used In | Purpose | Example Value |
+|----------|---------|---------|---------------|
+| `IgnoreErrorsOnSharedTags` | Install & Destroy | Skip tagging errors | `On` |
+| `SkipDestroyingSharedTags` | Destroy only | Skip tag cleanup | `On` |
+| `ForceOpenshiftInfraIDRandomPart` | Install only | Set InfraID suffix | `abc12` |
+
+### C. Terraform Outputs
+
+After successful installation, Terraform provides these outputs:
+
+```bash
+# Get all outputs
+terraform output
+
+# Common outputs:
+cluster_id                  # OpenShift Cluster ID (UUID)
+infra_id                    # Infrastructure ID (cluster-name-random)
+console_url                 # Web Console URL
+api_url                     # API Server URL
+kubeconfig_path             # Path to kubeconfig
+kubeadmin_password          # Initial admin password
+ingress_lb_arn              # Ingress Load Balancer ARN
+s3_oidc_bucket              # OIDC S3 Bucket Name
+```
+
+### D. Useful Links
+
+- **OpenShift 4.16 Documentation**: https://docs.openshift.com/container-platform/4.16/
+- **Release Notes**: https://docs.openshift.com/container-platform/4.16/release_notes/
+- **AWS Installation Guide**: https://docs.openshift.com/container-platform/4.16/installing/installing_aws/
+- **OpenShift Installer GitHub**: https://github.com/openshift/installer/tree/release-4.16
+- **RHCOS Download**: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.16/
+- **Disconnected Installation**: https://docs.openshift.com/container-platform/4.16/installing/disconnected_install/
+
+### E. Version Compatibility Matrix
+
+| Component | Version | Compatibility |
+|-----------|---------|---------------|
+| OpenShift | 4.16.9 | ✅ |
+| Kubernetes | 1.29.x | ✅ (included) |
+| RHCOS | 416.94.x | ✅ |
+| Go | 1.22.x | ✅ |
+| Terraform | 1.5.0+ | ✅ |
+| AWS Provider | 5.0+ | ✅ |
+| oc client | 4.16+ | ✅ |
+
+### F. Security Best Practices
+
+1. **AMI Security**
+   - Always use custom AMI with IMDSv2 enforced
+   - Encrypt all EBS volumes with customer-managed KMS keys
+   - Regularly update base RHCOS images
+
+2. **IAM Security**
+   - Use permission boundaries for all IAM roles
+   - Apply least privilege principle
+   - Rotate credentials regularly
+   - Use IAM roles instead of access keys where possible
+
+3. **Network Security**
+   - Use private subnets for all worker nodes
+   - Implement security groups with minimal required access
+   - Use AWS PrivateLink for service endpoints (in air-gapped)
+   - Enable VPC Flow Logs
+
+4. **Cluster Security**
+   - Rotate kubeadmin password after installation
+   - Integrate with corporate identity provider (LDAP/SAML)
+   - Enable audit logging
+   - Implement Pod Security Standards
+
+5. **Data Protection**
+   - Backup etcd regularly
+   - Use KMS encryption for persistent volumes
+   - Implement backup solutions (Velero, OADP)
+
+### G. Checklist for Production Deployment
+
+**Pre-Installation**
+- [ ] Custom AMI created and verified
+- [ ] Custom installer built and tested
+- [ ] Terraform code reviewed
+- [ ] Network architecture validated
+- [ ] DNS zones configured
+- [ ] KMS keys created and permissions set
+- [ ] IAM permission boundaries applied
+- [ ] Pull secret obtained
+- [ ] Backup/restore strategy defined
+
+**During Installation**
+- [ ] Terraform plan reviewed
+- [ ] Installation logs monitored
+- [ ] Bootstrap phase completed successfully
+- [ ] All nodes joined and ready
+- [ ] All cluster operators available
+
+**Post-Installation**
+- [ ] Web console accessible
+- [ ] API server accessible
+- [ ] Ingress routing working
+- [ ] Persistent storage tested
+- [ ] Proxy configuration verified (if applicable)
+- [ ] Monitoring stack healthy
+- [ ] Backup configured
+- [ ] Documentation updated
+- [ ] Runbooks created
+
+**Day 2 Operations**
+- [ ] Identity provider configured
+- [ ] RBAC policies defined
+- [ ] Resource quotas set
+- [ ] Network policies applied
+- [ ] Monitoring alerts configured
+- [ ] Log aggregation set up
+- [ ] Disaster recovery tested
+- [ ] Upgrade strategy defined
+
+---
+
+## Conclusion
+
+This guide provides a comprehensive approach to deploying OpenShift 4.16 on AWS with custom requirements around tagging, AMI configuration, and optional air-gapped installation.
+
+### Key Takeaways
+
+1. **Custom AMI with IMDSv2 and KMS** is mandatory for security compliance
+2. **Modified installer** bypasses tagging restrictions on shared infrastructure
+3. **Terraform automation** provides reproducible, infrastructure-as-code deployments
+4. **Disconnected installation** is supported through image mirroring
+5. **Manual credentials mode (OIDC)** works with permission boundaries
+
+### Next Steps
+
+- Review and customize the configuration for your environment
+- Test in a development/staging environment first
+- Document any environment-specific procedures
+- Train operations team on Day 2 management
+- Plan upgrade strategy for future OpenShift versions
+
+### Support
+
+For issues or questions:
+- OpenShift Documentation: https://docs.openshift.com/
+- Red Hat Customer Portal: https://access.redhat.com/
+- OpenShift Commons: https://commons.openshift.org/
+
+---
+
+**Document Version**: 1.0  
+**Last Updated**: January 21, 2026  
+**Author**: Technical Documentation Team  
+**Status**: Production Ready
