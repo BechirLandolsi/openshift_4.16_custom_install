@@ -145,7 +145,7 @@ func (o *ClusterUninstaller) removeSharedTag(ctx context.Context, session *sessi
 						continue
 					}
 					o.Logger.WithField("arn", *arn).Infof("Removed tag %s: shared", key)
-					removed[*arn] = exists
+					removed[*arn] = struct{}{}
 				}
 			}
 		}

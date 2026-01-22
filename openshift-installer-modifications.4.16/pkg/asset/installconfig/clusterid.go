@@ -3,12 +3,10 @@ package installconfig
 import (
 	"crypto/rand"
 	"fmt"
-	"math/big"
 	"os"
 	"strings"
 
 	"github.com/openshift/installer/pkg/asset"
-	"github.com/openshift/installer/pkg/types"
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
 )
 
