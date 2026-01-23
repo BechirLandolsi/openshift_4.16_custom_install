@@ -16,7 +16,7 @@ aws route53 list-hosted-zones
 #   "Name": "example.com."
 # }
 
-# Use ONLY the ID part in tfvars:
+# Use ONLY the ID part in tfvars, for your private hosted zone:
 hosted_zone = "Z1234567890ABC"
 ```
 

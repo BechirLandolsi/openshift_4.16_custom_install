@@ -82,6 +82,91 @@ This guide provides a complete, step-by-step procedure for deploying OpenShift 4
 
 ## Prerequisites
 
+Before proceeding with the installation, customers must ensure all prerequisites are met as documented in Red Hat's official OpenShift 4.16 documentation.
+
+### Red Hat Official Prerequisites
+
+The customer environment must comply with all requirements specified in these official Red Hat documentation guides:
+
+#### 1. AWS Infrastructure Prerequisites
+
+**Preparing to Install on AWS**  
+📖 https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#ipi-aws-preparing-to-install
+
+This guide covers:
+- AWS account requirements and quotas
+- IAM permissions required for installation
+- DNS requirements for cluster domains
+- Network architecture considerations
+- AWS service limits verification
+- Region and availability zone selection
+
+#### 2. Manual Credentials Mode with STS (REQUIRED for this deployment)
+
+**Installing a Cluster on AWS with Short-Term Credentials**  
+📖 https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#installing-aws-with-short-term-creds_installing-aws-customizations
+
+This guide covers:
+- AWS Security Token Service (STS) setup
+- OIDC provider configuration for IAM roles
+- Manual IAM role creation with `ccoctl` tool
+- Permission boundary configuration (if required)
+- Service account token authentication
+- **This is the deployment mode used by this solution**
+
+#### 3. Installing in an Existing VPC (REQUIRED for this deployment)
+
+**Installing a Cluster on AWS in an Existing VPC**  
+📖 https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#installing-aws-vpc
+
+This guide covers:
+- Prerequisites for using existing VPCs
+- VPC and subnet configuration requirements
+- Private vs. public subnet topology
+- NAT Gateway requirements for private subnets
+- Internet Gateway configuration
+- Route table configuration
+- DHCP options sets
+- DNS resolution requirements
+- **This is the network topology used by this solution**
+
+#### 4. Firewall and Network Connectivity
+
+**Configuring Your Firewall**  
+📖 https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html-single/installation_configuration/#configuring-firewall
+
+This guide covers:
+- Required egress firewall rules for OpenShift installation
+- Container image registry access (quay.io, registry.redhat.io)
+- OpenShift telemetry and update service endpoints
+- AWS service endpoint access requirements
+- Cluster-to-cluster communication (if applicable)
+- User-facing ingress requirements
+- **Critical for disconnected/air-gapped installations**
+
+#### Summary of Customer Responsibilities
+
+Before starting the installation, the customer **must provide or prepare**:
+
+| Resource | Description | Red Hat Documentation Reference |
+|----------|-------------|--------------------------------|
+| **AWS Account** | With appropriate service limits and quotas | Section 1 |
+| **IAM Permissions** | User/role with permissions to create OIDC, IAM roles, EC2, S3, ELB, Route53 | Sections 1, 2 |
+| **Existing VPC** | Customer-managed VPC in target region | Section 3 |
+| **Private Subnets** | At least 3 subnets across 3 availability zones | Section 3 |
+| **NAT Gateway** | For internet access from private subnets | Section 3 |
+| **Route Tables** | Properly configured with default routes to NAT Gateway | Section 3 |
+| **Route53 Hosted Zone** | For cluster DNS records (api.*, *.apps.*) | Sections 1, 3 |
+| **Firewall Rules** | Allow egress to Red Hat registries and AWS services | Section 4 |
+| **KMS Key** | (Optional) Customer-managed KMS key for EBS encryption | Section 1 |
+| **Permission Boundary** | (Optional) IAM permission boundary policy ARN if required | Section 2 |
+| **Proxy Configuration** | (If disconnected) HTTP/HTTPS proxy for external access | Section 4 |
+| **Mirror Registry** | (If disconnected) Internal container registry with mirrored images | Section 4 |
+
+**⚠️ IMPORTANT**: Failure to meet these prerequisites will result in installation failure. Verify all requirements before proceeding.
+
+---
+
 ### Required Tools
 
 | Tool | Minimum Version | Purpose |

@@ -1,218 +1,402 @@
-OpenShift 4.16 AWS Installation Package - Complete File List
-=============================================================
-Generated: January 21, 2026
-Version: 1.0
+# OpenShift 4.16 AWS Installation - Files Delivered
 
-ROOT DIRECTORY (Openshift_4.16/)
-================================
+This document lists all files in the OpenShift_4.16 delivery package and their purpose.
 
-Documentation Files:
--------------------
-✓ START_HERE.md          - Entry point, choose your path (5 min read)
-✓ README.md              - Master documentation, comprehensive guide (45 min read)
-✓ QUICKSTART.md          - Fast-track deployment guide (10 min read)  
-✓ SUMMARY.md             - Executive summary with requirements (15 min read)
-✓ INDEX.md               - Complete file index and navigation (10 min read)
+================================================================================
+ROOT DIRECTORY
+================================================================================
 
-Total Documentation: ~17,000 lines
+README.md
+    Main documentation file covering:
+    - Complete OpenShift 4.16 installation procedure on AWS
+    - Red Hat official prerequisites and documentation references
+    - IAM policies, network, and firewall requirements
+    - Custom installer modifications and build process
+    - Terraform automation setup and deployment
+    - Custom AMI creation with KMS encryption
+    - Step-by-step installation guide with troubleshooting
+    - Cluster cleanup and destruction procedures
 
-CUSTOM AMI BUILD (custom-ami-build/)
-====================================
+FILES_DELIVERED.txt
+    This file - complete inventory of all delivered files and their purposes
 
-Files:
-------
-✓ README.md                          - AMI build documentation
-✓ create-custom-ami.sh              - Automated AMI creation script
-✓ custom-ami-result.env             - Generated AMI details (created after build)
-✓ .gitignore                        - Ignore downloaded files
+.gitattributes
+    Git configuration for line ending handling:
+    - Forces Unix (LF) line endings for .sh, .tf, .yaml, .md files
+    - Prevents Windows CRLF issues in Linux environments
+    - Ensures scripts execute correctly on RHEL bastion hosts
 
-Purpose:
---------
-Create custom RHCOS AMI with:
-- KMS encryption (compliance)
-- OpenShift 4.16 compatible  
-- Red Hat official VMDK import method
+.vscode/
+    ├── settings.json
+        VS Code/Cursor editor configuration:
+        - Enforces LF line endings for this project
+        - Ensures consistent file formatting across team
 
-Build Time: ~30-40 minutes
-Method: Red Hat Official Documentation
+================================================================================
+custom-ami-build/
+================================================================================
+Directory containing scripts and documentation for creating custom RHCOS AMIs
+with AWS KMS encryption.
 
-INSTALLER MODIFICATIONS (openshift-installer-modifications.4.16/)
-=================================================================
+custom-ami-build/README.md
+    Complete guide for building custom RHCOS AMIs:
+    - Prerequisites for AMI creation
+    - AWS permissions and IAM role requirements (vmimport)
+    - KMS key creation and configuration
+    - Step-by-step AMI build process
+    - Troubleshooting import issues
 
-Files:
-------
-✓ README.md                                          - Build instructions
+custom-ami-build/create-custom-ami.sh
+    Main automation script for AMI creation:
+    - Downloads official RHCOS VMDK from Red Hat mirror
+    - Decompresses VMDK file
+    - Uploads to S3 bucket
+    - Imports snapshot with KMS encryption
+    - Creates encrypted AMI with IMDSv2 support
+    - Cleans up temporary resources
 
-Modified Source Files:
----------------------
-✓ pkg/asset/cluster/aws/aws.go                      - Skip subnet tagging errors
-✓ pkg/asset/installconfig/clusterid.go              - Control InfraID generation
-✓ pkg/destroy/aws/shared.go                         - Skip tag cleanup on destroy
-✓ pkg/asset/releaseimage/default.go                 - Pin to OCP 4.16.9
+custom-ami-build/example-usage.sh
+    Example script showing how to use create-custom-ami.sh:
+    - Sample environment variable configuration
+    - Proper command syntax
+    - Expected output examples
 
-Total Modifications: 4 files, ~23 lines of code
+custom-ami-build/.gitignore
+    Prevents committing sensitive or temporary files:
+    - Downloaded VMDK files
+    - AWS credentials
+    - Temporary S3 upload artifacts
 
-Purpose:
---------
-Enable OpenShift installation without subnet tagging permissions
+================================================================================
+openshift-installer-modifications.4.16/
+================================================================================
+Directory containing modified OpenShift installer source code files for
+custom behavior required for shared VPC/subnet deployments.
 
-Environment Variables:
----------------------
-- IgnoreErrorsOnSharedTags         (create)
-- ForceOpenshiftInfraIDRandomPart  (create)
-- SkipDestroyingSharedTags         (destroy)
+openshift-installer-modifications.4.16/README.md
+    Detailed explanation of installer modifications:
+    - Why modifications are needed (shared VPC/subnets)
+    - List of all modified files and changes
+    - Environment variables for controlling installer behavior
+    - Build instructions for custom installer
+    - How to apply modifications to upstream source
 
-Build Time: ~20 minutes
+openshift-installer-modifications.4.16/pkg/asset/cluster/aws/aws.go
+    Modified AWS cluster creation logic:
+    - Adds IgnoreErrorsOnSharedTags environment variable check
+    - Allows installer to proceed when tagging shared VPC resources fails
+    - Required when VPC/subnets are managed outside OpenShift
 
-TERRAFORM AUTOMATION (terraform-openshift-v18/)
-===============================================
+openshift-installer-modifications.4.16/pkg/asset/installconfig/clusterid.go
+    Modified cluster ID (InfraID) generation:
+    - Adds ForceOpenshiftInfraIDRandomPart environment variable
+    - Allows controlling the random suffix of InfraID
+    - Enables predictable cluster naming for automation
 
-Core Terraform Files:
---------------------
-✓ providers.tf              - AWS provider configuration
-✓ backend.tf                - S3 backend for state
-✓ variables.tf              - Input variables (281 lines)
-✓ main.tf                   - Main infrastructure
-✓ output.tf                 - Output values
-✓ templates.tf              - install-config templates
+openshift-installer-modifications.4.16/pkg/asset/releaseimage/default.go
+    Default release image configuration:
+    - Sets default OpenShift release image
+    - Function for retrieving release image URL
+    - Used when release_image not specified
 
-IAM & Security:
---------------
-✓ iam.tf                    - IAM roles with permission boundaries
-✓ ssh_key.tf                - SSH key generation
+openshift-installer-modifications.4.16/pkg/destroy/aws/shared.go
+    Modified cluster destroy logic for shared resources:
+    - Adds SkipDestroyingSharedTags environment variable check
+    - Skips removal of tags from shared VPC/subnet resources
+    - Adds IgnoreErrorsOnSharedTags for graceful failure handling
+    - Prevents destroy failures when resources are shared
 
-Storage:
---------
-✓ s3.tf                     - S3 buckets for OIDC
-✓ s3.dynamo.tf              - DynamoDB for state locking
+================================================================================
+terraform-openshift-v18/
+================================================================================
+Terraform automation for OpenShift 4.16 installation on AWS with custom
+installer integration, IAM role creation via ccoctl, and cluster lifecycle
+management.
 
-OpenShift Orchestration:
------------------------
-✓ main.openshift.tf         - Overall orchestration
-✓ openshift.prepare.tf      - Manifest generation
-✓ openshift.install.tf      - Cluster installation
-✓ openshift.day2.tf         - Post-install config
+--------------------------------------------------------------------------------
+DOCUMENTATION
+--------------------------------------------------------------------------------
 
-Installation Scripts:
---------------------
-✓ create-cluster.sh         - Cluster creation wrapper
-✓ delete-cluster.sh         - Cluster deletion wrapper
-✓ clean-cluster.sh          - Cleanup script
-✓ get-ingress-lb.sh         - Extract ingress LB
-✓ save-cluster-states.sh    - Save artifacts to S3
-✓ wait.sh                   - Wait for conditions
-✓ delete-record.sh          - Delete DNS records
-✓ delete-role.sh            - Delete IAM role
-✓ delete-roles.sh           - Delete all IAM roles
-✓ test-roles.sh             - Test IAM permissions
-✓ env.sh                    - Environment setup
+terraform-openshift-v18/README.md
+    Comprehensive Terraform module documentation:
+    - Prerequisites and required tools (ccoctl installation)
+    - Red Hat documentation references
+    - Module overview and architecture
+    - Quick start guide
+    - Configuration file explanations
+    - Deployment and destruction procedures
+    - Troubleshooting common issues
+    - Version history and support information
 
-Configuration:
--------------
-✓ env/ocp-skw-hprod-plaasma-bkprestore-d44a5.tfvars  - Example tfvars
-✓ README                    - Original v17 notes
+terraform-openshift-v18/README
+    Version notes and internal change log:
+    - Differences between v17 and v16
+    - Internal development notes
+    - Technical implementation details
+    - Kept for historical reference
 
-Total Files: 30+ Terraform/script files
+terraform-openshift-v18/env/VARIABLES-EXPLAINED.md
+    Comprehensive variable documentation:
+    - Detailed explanation of every Terraform variable
+    - How to find/configure each value
+    - AWS account ID, region, availability zones
+    - Network configuration (VPC, subnets, CIDR ranges)
+    - IAM policies and permission boundaries
+    - KMS key configuration
+    - DNS and Route53 hosted zones
+    - Release images for disconnected environments
+    - SSH keys and authentication
 
-Deployment Time: ~45 minutes
+--------------------------------------------------------------------------------
+CONFIGURATION FILES
+--------------------------------------------------------------------------------
 
-SUMMARY OF DELIVERABLES
-=======================
+terraform-openshift-v18/env/demo.tfvars
+    Main Terraform variable definitions file:
+    - AWS account and region configuration
+    - Cluster name and InfraID
+    - Network settings (VPC, subnets, CIDR blocks)
+    - IAM role names and policies
+    - KMS encryption aliases
+    - DNS domain and hosted zone
+    - OpenShift version and release image
+    - SSH public key for cluster access
+    - Template for customer-specific deployments
 
-Documentation:
---------------
-- 5 comprehensive guides (17,000+ lines)
-- 3 component-specific READMEs
-- Complete troubleshooting sections
-- Production deployment checklists
+terraform-openshift-v18/variables.tf
+    Terraform variable declarations:
+    - Defines all input variables with types
+    - Default values where applicable
+    - Variable descriptions
+    - Used by Terraform to validate tfvars input
 
-Code:
------
-- 1 Shell script (AMI build automation - Red Hat official)
-- 4 modified Go files (installer customization)
-- 30+ Terraform files (infrastructure automation)
-- 11 bash scripts (deployment automation)
+terraform-openshift-v18/providers.tf
+    Terraform provider configuration:
+    - AWS provider setup with region from variables
+    - Provider version constraints
+    - Authentication configuration
 
-Total Package Size: ~50+ files
+terraform-openshift-v18/backend.tf.disabled
+    S3 backend configuration (disabled by default):
+    - Template for remote state storage in S3
+    - DynamoDB table for state locking
+    - Can be enabled by removing .disabled extension
+    - Local state used by default for simplicity
 
-WHAT THIS ENABLES
-=================
+--------------------------------------------------------------------------------
+TERRAFORM RESOURCE DEFINITIONS
+--------------------------------------------------------------------------------
 
-✓ Deploy OpenShift 4.16.9 on AWS
-✓ Bypass subnet tagging requirements
-✓ Use custom AMI with IMDSv2 + KMS
-✓ Automated deployment via Terraform
-✓ Support for air-gapped environments
-✓ IAM role automation with permission boundaries
-✓ OIDC-based manual credentials mode
-✓ Reproducible infrastructure
+terraform-openshift-v18/main.tf
+    Core Terraform resources:
+    - SSH key pair generation and upload
+    - Local file outputs for keys
+    - Resource dependencies and ordering
 
-GETTING STARTED
-===============
+terraform-openshift-v18/main.openshift.tf
+    OpenShift-specific provisioning:
+    - ccoctl key pair creation (serviceaccount-signer keys)
+    - OIDC provider configuration (dry-run generation)
+    - S3 OIDC bucket creation and file upload
+    - IAM OIDC identity provider creation
+    - IAM roles creation via ccoctl (control plane, workers)
+    - Handles permissions boundaries conditionally
 
-For Quick Deployment:
---------------------
-1. Read: START_HERE.md (5 min)
-2. Follow: QUICKSTART.md (2 hours)
-3. Deploy cluster ✅
+terraform-openshift-v18/iam.tf
+    IAM resources for OpenShift:
+    - Control plane IAM role and policy
+    - Worker node IAM role and policy
+    - EC2 instance profiles
+    - Permissions for AWS integrations (ELB, EBS, etc.)
 
-For Complete Understanding:
---------------------------
-1. Read: SUMMARY.md (15 min)
-2. Study: README.md (45 min)
-3. Follow detailed steps (2-3 hours)
-4. Deploy cluster ✅
+terraform-openshift-v18/s3.tf
+    S3 bucket for OIDC provider:
+    - Creates bucket for OIDC discovery documents
+    - Public read access for OIDC federation
+    - Bucket policy for OpenID Connect
 
-For Specific Components:
------------------------
-- AMI Build: custom-ami-build/README.md
-- Installer: openshift-installer-modifications.4.16/README.md
-- File Index: INDEX.md
+terraform-openshift-v18/s3.dynamo.tf
+    (Optional) Remote state backend resources:
+    - S3 bucket for Terraform state storage
+    - DynamoDB table for state locking
+    - Versioning and encryption configuration
+    - Can be disabled if using local state
 
-SUPPORT RESOURCES
-=================
+terraform-openshift-v18/ssh_key.tf
+    SSH key management:
+    - Generates RSA key pair if not exists
+    - Stores private key locally
+    - Uploads public key to AWS
 
-Internal Documentation:
-----------------------
-- All READMEs contain troubleshooting
-- INDEX.md has complete file reference
-- SUMMARY.md has executive overview
+terraform-openshift-v18/templates.tf
+    Template generation for OpenShift configs:
+    - install-config.yaml template (cluster configuration)
+    - cluster_ingress manifest template
+    - infra machinesets template
+    - KMS alias and subnet data sources
+    - Network type set to OVNKubernetes (4.16 requirement)
 
-External Resources:
-------------------
-- OpenShift 4.16 Docs: https://docs.openshift.com/container-platform/4.16/
-- Red Hat Support: https://access.redhat.com/
-- RHCOS AMI List: https://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.16/
-- Pull Secret: https://console.redhat.com/openshift/install/pull-secret
+terraform-openshift-v18/openshift.prepare.tf
+    OpenShift manifest preparation:
+    - Extracts CredentialsRequest manifests from release image
+    - Runs openshift-install create manifests
+    - Applies custom ingress configuration
+    - Creates infra machinesets
+    - Prepares cluster for installation
 
-VERSION INFORMATION
-===================
+terraform-openshift-v18/openshift.install.tf
+    OpenShift cluster installation execution:
+    - Runs openshift-install create cluster
+    - Sets environment variables for custom installer behavior
+    - Monitors installation progress
+    - Saves cluster state and credentials
+    - Runs backup script to S3
 
-OpenShift: 4.16.9
-Kubernetes: 1.29.x
-RHCOS: 4.16.51 (x86_64)
-Terraform: v18 (updated from v17)
-Go Required: 1.22.x
-AWS CLI Required: 2.x
+terraform-openshift-v18/openshift.day2.tf
+    Day 2 operations (post-installation):
+    - Updates ingress controller DNS records
+    - Retrieves ingress load balancer
+    - Creates Route53 records for *.apps domain
 
-STATUS
-======
+terraform-openshift-v18/output.tf
+    Terraform outputs:
+    - Cluster information (API URL, console URL)
+    - Credentials location
+    - OIDC provider ARN
+    - IAM role ARNs
+    - Displayed after successful deployment
 
-✅ Complete and Ready for Production Use
-✅ All files verified
-✅ Documentation comprehensive
-✅ Code tested and working
-✅ Examples provided
+--------------------------------------------------------------------------------
+SHELL SCRIPTS - CLUSTER LIFECYCLE
+--------------------------------------------------------------------------------
 
-NEXT STEPS
-==========
+terraform-openshift-v18/create-cluster.sh
+    Wrapper script for cluster creation:
+    - Sets environment variables for custom installer
+    - Calls openshift-install create cluster
+    - Used by openshift.install.tf
 
-1. Review START_HERE.md
-2. Choose your deployment path
-3. Follow the guide
-4. Deploy OpenShift 4.16 ✅
+terraform-openshift-v18/clean-cluster.sh
+    Cluster cleanup orchestration:
+    - Called by terraform destroy
+    - Fetches installer-files from S3 if missing locally
+    - Gracefully handles S3 bucket absence
+    - Runs delete-cluster.sh with timeout
+    - Deletes DNS records (api, api-int)
+    - Calls delete-roles.sh to remove IAM roles
 
-For questions or issues, refer to the troubleshooting sections in README.md
+terraform-openshift-v18/delete-cluster.sh
+    OpenShift cluster destruction:
+    - Sets environment variables (SkipDestroyingSharedTags, etc.)
+    - Runs openshift-install destroy cluster
+    - Checks for metadata.json existence
+    - Returns proper exit codes for error handling
+    - Warns if resources may remain
 
-END OF FILE LIST
-================
+terraform-openshift-v18/save-cluster-states.sh
+    Backup cluster state to S3:
+    - Creates tar archive of installer-files directory
+    - Uploads to S3 bucket (if exists)
+    - Ensures local backup even if S3 upload fails
+    - Preserves metadata.json, kubeconfig, credentials
+
+--------------------------------------------------------------------------------
+SHELL SCRIPTS - IAM AND DNS MANAGEMENT
+--------------------------------------------------------------------------------
+
+terraform-openshift-v18/delete-roles.sh
+    IAM role cleanup:
+    - Deletes all IAM roles created by ccoctl
+    - Handles role naming patterns for cluster
+    - Detaches managed policies before deletion
+    - Removes inline policies
+    - Used during cluster destroy
+
+terraform-openshift-v18/delete-role.sh
+    Single IAM role deletion:
+    - Deletes one specific IAM role by name
+    - Detaches all attached policies
+    - Removes inline policies
+    - Helper script for manual cleanup
+
+terraform-openshift-v18/delete-record.sh
+    Route53 DNS record deletion:
+    - Removes A records from hosted zone
+    - Used for api and api-int subdomains
+    - Handles record set deletion safely
+
+terraform-openshift-v18/test-roles.sh
+    IAM role validation:
+    - Tests if required IAM roles exist
+    - Verifies role permissions
+    - Checks policy attachments
+    - Troubleshooting helper
+
+--------------------------------------------------------------------------------
+SHELL SCRIPTS - UTILITIES
+--------------------------------------------------------------------------------
+
+terraform-openshift-v18/get-ingress-lb.sh
+    Retrieves ingress load balancer information:
+    - Queries OpenShift for ingress controller
+    - Extracts load balancer DNS name
+    - Used for DNS record creation
+    - Called during Day 2 operations
+
+terraform-openshift-v18/wait.sh
+    Polling utility for Terraform:
+    - Waits for a command to succeed
+    - Retries with configurable intervals
+    - Exits after max retries or success
+    - Generic helper for resource readiness checks
+
+terraform-openshift-v18/env.sh
+    Environment setup script:
+    - Sets AWS credentials
+    - Exports environment variables
+    - Source before running Terraform commands
+    - Template for customer environment
+
+--------------------------------------------------------------------------------
+OPENSHIFT CONFIGURATION TEMPLATES
+--------------------------------------------------------------------------------
+
+terraform-openshift-v18/openshift/openshift_pull_secret.json
+    Red Hat pull secret template:
+    - Required for downloading OpenShift images
+    - Obtain from console.redhat.com
+    - Must be customized before deployment
+    - Contains authentication for quay.io and registries
+
+================================================================================
+FILE COUNT SUMMARY
+================================================================================
+
+Documentation:              6 files
+Configuration:              5 files
+Terraform Resources:       11 files
+Shell Scripts:             13 files
+Source Code (Go):           4 files
+Git/Editor Config:          3 files
+                          ---
+TOTAL:                     42 files
+
+================================================================================
+MODIFICATION TRACKING
+================================================================================
+
+Last Updated: 2026-01-23
+Version: 4.16 (Custom Installer Build)
+Compatibility: OpenShift 4.16.x, Terraform 1.5+, AWS Provider 5.0+
+
+================================================================================
+NOTES
+================================================================================
+
+1. All shell scripts use Unix (LF) line endings enforced by .gitattributes
+2. Terraform files use local state by default (backend.tf.disabled)
+3. Custom installer must be built before running Terraform
+4. ccoctl tool is required and must be installed separately
+5. AWS credentials must be configured before deployment
+
+================================================================================

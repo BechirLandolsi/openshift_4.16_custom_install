@@ -43,6 +43,47 @@ export KMS_KEY_ID="alias/your-key-name"  # or ARN
 
 ## Prerequisites
 
+### Red Hat Official Documentation
+
+This AMI creation process is based on the official Red Hat OpenShift documentation. Before proceeding, review these resources:
+
+**Uploading a Custom RHCOS AMI to AWS**  
+📖 https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#installation-aws-upload-custom-rhcos-ami_installing-aws-secret-region
+
+This documentation covers:
+- Official procedure for VMDK import to create custom AMIs
+- Requirements for RHCOS AMI compatibility
+- KMS encryption configuration during AMI import
+- AWS service role requirements (vmimport)
+- Supported RHCOS versions for OpenShift 4.16
+
+**Finding RHCOS Images**  
+📖 https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#installation-aws-custom-ami_installing-aws-customizations
+
+This documentation covers:
+- Where to download RHCOS VMDK files
+- Supported machine architecture (x86_64, aarch64)
+- Version compatibility with OpenShift releases
+- Image format requirements
+
+### Customer Responsibilities
+
+Before creating a custom AMI, ensure you have:
+
+| Requirement | Description | Documentation Reference |
+|-------------|-------------|------------------------|
+| **AWS CLI** | Installed and configured with credentials | See below |
+| **IAM Permissions** | EC2, KMS, S3, IAM permissions for AMI creation | See below |
+| **vmimport Role** | AWS service role for importing VM images | Red Hat Official Doc |
+| **KMS Key** | Customer-managed KMS key for EBS encryption | See below |
+| **S3 Bucket** | Temporary bucket for VMDK upload (script creates) | Red Hat Official Doc |
+| **RHCOS VMDK** | Official RHCOS image for OpenShift 4.16 | Red Hat Official Doc |
+| **Network Access** | Ability to download from mirror.openshift.com | Red Hat Official Doc |
+
+**⚠️ IMPORTANT**: This process creates the AMI with KMS encryption. IMDSv2 enforcement is configured at **instance launch time** in the OpenShift install-config.yaml and machine sets, not in the AMI itself.
+
+---
+
 ### 1. AWS CLI Installed and Configured
 
 ```bash
