@@ -312,6 +312,15 @@ terraform-openshift-v18/delete-roles.sh
     - Removes inline policies
     - Used during cluster destroy
 
+terraform-openshift-v18/manual-cleanup.sh
+    Comprehensive manual cleanup script for stuck resources:
+    - Cleans up IAM roles and policies that already exist
+    - Empties and deletes S3 buckets (OIDC and state)
+    - Removes OIDC identity providers
+    - Handles EntityAlreadyExists errors
+    - Use when terraform destroy fails
+    - Configured for eu-west-3 region
+
 terraform-openshift-v18/delete-role.sh
     Single IAM role deletion:
     - Deletes one specific IAM role by name
@@ -375,11 +384,11 @@ FILE COUNT SUMMARY
 Documentation:              6 files
 Configuration:              5 files
 Terraform Resources:       11 files
-Shell Scripts:             13 files
+Shell Scripts:             14 files
 Source Code (Go):           4 files
 Git/Editor Config:          3 files
                           ---
-TOTAL:                     42 files
+TOTAL:                     43 files
 
 ================================================================================
 MODIFICATION TRACKING
