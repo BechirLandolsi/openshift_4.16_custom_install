@@ -63,7 +63,7 @@ networking:
     hostPrefix: ${var.cluster_network_host_prefix}
   machineNetwork: %{ for cidr in var.machine_network_cidr}
   - cidr: ${cidr}%{ endfor }
-  networkType: OpenShiftSDN
+  networkType: OVNKubernetes
   serviceNetwork:
   - ${var.service_network_cidr}
 
@@ -140,7 +140,7 @@ data "aws_subnet" "subnets" {
 }
 
 
-resource "template_file" "infra_machineset_template" {
+data "template_file" "infra_machineset_template" {
   count    = length(var.aws_worker_availability_zones)
   template = <<EOF
 apiVersion: machine.openshift.io/v1beta1

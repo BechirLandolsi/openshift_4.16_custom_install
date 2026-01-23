@@ -2,7 +2,7 @@ resource "null_resource" "openshift_prepare" {
   depends_on = [local_file.install_config,null_resource.create_roles]
   provisioner "local-exec" {
     interpreter = ["bash","-c"]
-	command     = "ForceOpenshiftInfraIDRandomPart=${var.infra_random_id} openshift-install create manifests --dir=installer-files"
+	command     = "ForceOpenshiftInfraIDRandomPart=${var.infra_random_id} ./openshift-install create manifests --dir=installer-files"
   }
   provisioner "local-exec" {
     interpreter = ["bash","-c"]
@@ -27,7 +27,7 @@ resource "local_file" "infra_machinesets" {
 
   count    = length(var.aws_worker_availability_zones)
   filename = "installer-files/openshift/99_openshift-cluster-api_infra-machineset-${count.index}.yaml"
-  content  = template_file.infra_machineset_template[count.index].rendered
+  content  = data.template_file.infra_machineset_template[count.index].rendered
 }
 
 

@@ -60,7 +60,7 @@ resource "null_resource" "create_roles" {
 
   provisioner "local-exec" {
     command     = <<EOT
-		ccoctl aws create-iam-roles --name=${var.cluster_name} --region=${var.region} --credentials-requests-dir=output/credrequests --identity-provider-arn=${aws_iam_openid_connect_provider.default.arn}  --output-dir output --permissions-boundary-arn ${var.ccoe_boundary}
+		ccoctl aws create-iam-roles --name=${var.cluster_name} --region=${var.region} --credentials-requests-dir=output/credrequests --identity-provider-arn=${aws_iam_openid_connect_provider.default.arn}  --output-dir output ${var.ccoe_boundary != "" ? "--permissions-boundary-arn ${var.ccoe_boundary}" : ""}
 	EOT
   }   
 

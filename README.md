@@ -930,12 +930,17 @@ Ensure the create script uses the custom installer:
 #!/bin/bash
 
 # Set environment variables for custom installer
+# Note: Any non-empty value works (On, True, 1, yes, etc.)
 export IgnoreErrorsOnSharedTags=On
 export ForceOpenshiftInfraIDRandomPart="${INFRA_RANDOM_ID}"
 
 # Run the custom OpenShift installer
 ./openshift-install create cluster --dir=installer-files --log-level=debug
 ```
+
+**Environment Variables Explained**:
+- `IgnoreErrorsOnSharedTags=On` - Ignores permission errors when tagging shared VPC resources (any non-empty value works)
+- `ForceOpenshiftInfraIDRandomPart` - Controls the 5-character random part of InfraID (value set by Terraform)
 
 ### Step 3.5: Update delete-cluster.sh
 
@@ -945,11 +950,30 @@ export ForceOpenshiftInfraIDRandomPart="${INFRA_RANDOM_ID}"
 #!/bin/bash
 
 # Set environment variables for custom installer
+# Note: Any non-empty value works (On, True, 1, yes, etc.)
 export SkipDestroyingSharedTags=On
 
 # Run the custom OpenShift installer destroy
 ./openshift-install destroy cluster --dir=installer-files --log-level=debug
 ```
+
+**Environment Variable Explained**:
+- `SkipDestroyingSharedTags=On` - Completely skips removing tags from shared VPC resources during destroy (any non-empty value works)
+
+**Alternative Options**:
+```bash
+# Option 1: Skip tag removal completely (RECOMMENDED)
+export SkipDestroyingSharedTags=On
+
+# Option 2: Try to remove tags but ignore errors
+export IgnoreErrorsOnSharedTags=On
+
+# Option 3: Use both (redundant, SkipDestroyingSharedTags takes precedence)
+export SkipDestroyingSharedTags=On
+export IgnoreErrorsOnSharedTags=On
+```
+
+**Recommendation**: Use `SkipDestroyingSharedTags=On` for cleaner operation.
 
 ---
 
@@ -984,7 +1008,7 @@ terraform init
 
 ```bash
 # Generate execution plan
-terraform plan -var-file="env/my-cluster.tfvars" -out=tfplan
+terraform plan -var-file="env/demo.tfvars" -out=tfplan
 
 # Review the plan carefully
 # Should show resources to be created:
@@ -996,7 +1020,130 @@ terraform plan -var-file="env/my-cluster.tfvars" -out=tfplan
 # Estimated resources: ~30-50 resources
 ```
 
-### Step 4.3: Apply Terraform Configuration
+### Step 4.3: Install `ccoctl` Tool (REQUIRED)
+
+**IMPORTANT**: The `ccoctl` (Cloud Credential Operator CLI) tool is **required** for creating IAM roles and OIDC providers in manual credentials mode.
+
+#### What is `ccoctl`?
+
+`ccoctl` is a Red Hat utility that creates AWS IAM roles with proper trust policies and OIDC identity providers for OpenShift clusters using manual credentials mode.
+
+**Without `ccoctl`, Terraform will fail with**:
+```
+Error: bash: line 1: ccoctl: command not found
+```
+
+#### Installation Instructions
+
+**Option 1: Download from Red Hat Mirror (Recommended)**
+
+```bash
+# For Linux (RHEL, CentOS, Ubuntu, Amazon Linux, etc.)
+wget https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.16.9/ccoctl-linux.tar.gz
+
+# Extract the archive
+tar -xzf ccoctl-linux.tar.gz
+
+# Move to system PATH
+sudo mv ccoctl /usr/local/bin/
+
+# Make executable
+chmod +x /usr/local/bin/ccoctl
+
+# Verify installation
+which ccoctl
+ccoctl --help
+```
+
+**For macOS**:
+```bash
+# Download macOS version
+wget https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.16.9/ccoctl-darwin.tar.gz
+
+# Extract and install
+tar -xzf ccoctl-darwin.tar.gz
+sudo mv ccoctl /usr/local/bin/
+chmod +x /usr/local/bin/ccoctl
+
+# Verify
+ccoctl --help
+```
+
+**Option 2: Extract from OpenShift Release (Alternative)**
+
+```bash
+# If you have oc CLI installed
+RELEASE_IMAGE="quay.io/openshift-release-dev/ocp-release:4.16.9-x86_64"
+oc adm release extract --tools $RELEASE_IMAGE
+
+# This downloads a tarball, extract it
+tar -xzf openshift-client-*.tar.gz
+
+# Install ccoctl
+sudo mv ccoctl /usr/local/bin/
+chmod +x /usr/local/bin/ccoctl
+```
+
+#### Verify Installation
+
+```bash
+# Check ccoctl is in PATH
+which ccoctl
+# Should output: /usr/local/bin/ccoctl
+
+# Show help (ccoctl does not have a version command)
+ccoctl --help
+# Should display usage information and available commands
+```
+
+**Expected Output**:
+```
+Creates/Deletes/Updates AWS credentials objects
+
+Usage:
+  ccoctl aws [command]
+
+Available Commands:
+  create-all           Create all the required credentials objects
+  create-iam-roles     Create IAM roles
+  create-identity-provider Create identity provider
+  create-key-pair      Create a key pair
+  delete               Delete credentials objects
+  ...
+```
+
+#### What Does `ccoctl` Do?
+
+During Terraform execution, `ccoctl` is used to:
+
+1. **Create Key Pair**: Generate RSA keys for OIDC signing
+2. **Create IAM Roles**: Create AWS IAM roles with:
+   - Proper trust policies for OIDC
+   - Required permissions for OpenShift components
+   - Permission boundaries (if specified)
+3. **Configure OIDC**: Set up OpenID Connect identity provider
+
+#### Troubleshooting
+
+**Issue**: `ccoctl: command not found`
+
+**Solution**: 
+- Verify installation: `which ccoctl`
+- Check PATH: `echo $PATH`
+- Reinstall following instructions above
+- Ensure `/usr/local/bin` is in your PATH
+
+**Issue**: Permission denied when downloading
+
+**Solution**:
+```bash
+# Use curl instead of wget
+curl -L https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.16.9/ccoctl-linux.tar.gz -o ccoctl-linux.tar.gz
+```
+
+---
+
+### Step 4.4: Apply Terraform Configuration
 
 ```bash
 # Apply the plan
@@ -1015,7 +1162,7 @@ terraform apply tfplan
 # Monitor progress in output/openshift-install.log
 ```
 
-### Step 4.4: Monitor Installation Progress
+### Step 4.5: Monitor Installation Progress
 
 Open a new terminal and watch the installation logs:
 
@@ -1032,7 +1179,7 @@ tail -f output/openshift-install.log
 # 4. "Install complete!"
 ```
 
-### Step 4.5: Verify Installation
+### Step 4.6: Verify Installation
 
 Once Terraform completes successfully:
 
@@ -1071,7 +1218,7 @@ oc whoami --show-console
 cat installer-files/auth/kubeadmin-password
 ```
 
-### Step 4.6: Access the Cluster
+### Step 4.7: Access the Cluster
 
 ```bash
 # Web Console
@@ -1084,7 +1231,7 @@ oc login -u kubeadmin -p "$(cat installer-files/auth/kubeadmin-password)" \
   "https://api.${CLUSTER_NAME}.${DOMAIN}:6443"
 ```
 
-### Step 4.7: Verify Custom AMI Usage
+### Step 4.8: Verify Custom AMI Usage
 
 ```bash
 # Check that nodes are using the custom AMI
@@ -1101,7 +1248,7 @@ aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0
 # Should match your custom AMI: ami-0abcdef1234567890
 ```
 
-### Step 4.8: Verify IMDSv2 Configuration
+### Step 4.9: Verify IMDSv2 Configuration
 
 ```bash
 # Check that all instances have IMDSv2 enforced
@@ -1115,7 +1262,7 @@ aws ec2 describe-instances \
 # All instances should show "required" for HttpTokens
 ```
 
-### Step 4.9: Verify KMS Encryption
+### Step 4.10: Verify KMS Encryption
 
 ```bash
 # Check EBS volumes are encrypted with correct KMS key
