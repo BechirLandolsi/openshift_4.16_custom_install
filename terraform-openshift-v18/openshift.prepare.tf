@@ -1,5 +1,12 @@
 resource "null_resource" "openshift_prepare" {
-  depends_on = [local_file.install_config,null_resource.create_roles]
+  depends_on = [
+    local_file.install_config,
+    null_resource.create_roles,
+    aws_iam_role_policy_attachment.ocpcontrolplane-attach,
+    aws_iam_role_policy_attachment.ocpworkernode-attach,
+    aws_iam_instance_profile.ocpcontrolplane,
+    aws_iam_instance_profile.ocpworkernode
+  ]
   provisioner "local-exec" {
     interpreter = ["bash","-c"]
 	command     = "ForceOpenshiftInfraIDRandomPart=${var.infra_random_id} ./openshift-install create manifests --dir=installer-files"

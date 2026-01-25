@@ -196,7 +196,7 @@ spec:
           - filters:
             - name: tag:Name
               values:
-              - ${var.cluster_name}-${var.infra_random_id}-worker-sg
+              - ${var.cluster_name}-${var.infra_random_id}-node
           subnet:
             id: ${data.aws_subnet.subnets[var.aws_worker_availability_zones[count.index]].id}
           tags:%{ for key, value in var.tags }

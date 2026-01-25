@@ -94,6 +94,14 @@ resource "aws_iam_role_policy_attachment" "ocpcontrolplane-attach" {
   policy_arn = aws_iam_policy.ocpcontrolplane-policy.arn
 }
 
+# Instance profile for control plane (created for installer compatibility)
+resource "aws_iam_instance_profile" "ocpcontrolplane" {
+  name = "${var.cluster_name}-${var.infra_random_id}-master-profile"
+  role = aws_iam_role.ocpcontrolplane.name
+  
+  tags = var.tags
+}
+
 
 ########################################################
 ##############   ROLE OCP WORKER NODE   ################
@@ -132,12 +140,30 @@ data "aws_iam_policy_document" "ocpworkernode-policy" {
     ]
     resources = ["*"]
   }
+  
+  statement {
+    effect    = "Allow"
+    actions   = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey",
+      "kms:CreateGrant"
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_policy" "ocpworkernode-policy" {
   name        = var.ocpworkernode_policy #"ocpworkernode-policy"
-  description = "OCP Worker Policy"
+  description = "OCP Worker Policy with KMS permissions"
   policy      = data.aws_iam_policy_document.ocpworkernode-policy.json
+  
+  # Force recreation when policy document changes
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "tf_ocpworkernode_node_AmazonEC2ContainerRegistryReadOnly" {
@@ -148,6 +174,14 @@ resource "aws_iam_role_policy_attachment" "tf_ocpworkernode_node_AmazonEC2Contai
 resource "aws_iam_role_policy_attachment" "ocpworkernode-attach" {
   role       = aws_iam_role.ocpworkernode.name
   policy_arn = aws_iam_policy.ocpworkernode-policy.arn
+}
+
+# Instance profile for worker nodes (created for installer compatibility)
+resource "aws_iam_instance_profile" "ocpworkernode" {
+  name = "${var.cluster_name}-${var.infra_random_id}-worker-profile"
+  role = aws_iam_role.ocpworkernode.name
+  
+  tags = var.tags
 }
 
 data "aws_iam_policy_document" "allow_access_from_another_account" {

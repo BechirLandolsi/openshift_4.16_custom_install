@@ -11,6 +11,7 @@
 1. [Overview](#overview)
 2. [What's New in 4.16](#whats-new-in-416)
 3. [Prerequisites](#prerequisites)
+   - [KMS Key Configuration for EBS Encryption](#kms-key-configuration-for-ebs-encryption)
 4. [Architecture Overview](#architecture-overview)
 5. [Part 1: Custom AMI Creation](#part-1-custom-ami-creation)
 6. [Part 2: Building the Custom OpenShift Installer](#part-2-building-the-custom-openshift-installer)
@@ -164,6 +165,224 @@ Before starting the installation, the customer **must provide or prepare**:
 | **Mirror Registry** | (If disconnected) Internal container registry with mirrored images | Section 4 |
 
 **⚠️ IMPORTANT**: Failure to meet these prerequisites will result in installation failure. Verify all requirements before proceeding.
+
+---
+
+### KMS Key Configuration for EBS Encryption
+
+If using customer-managed KMS keys for EBS volume encryption, the KMS key policy **must** grant permissions to OpenShift IAM roles **before** installation begins.
+
+#### Why This is Required
+
+OpenShift creates encrypted EBS volumes for:
+- Control plane node root volumes (etcd data)
+- Worker node root volumes
+- Infrastructure node root volumes
+- Persistent volumes (PVs) for applications
+
+When specifying a custom KMS key, AWS requires the IAM roles creating EC2 instances to have explicit permissions in the KMS key policy.
+
+#### Failure Scenario Without Proper KMS Policy
+
+```
+Instance Launch → Create Encrypted EBS → KMS Permission Check → ❌ DENIED
+Result: Client.InvalidKMSKey.InvalidState error
+All worker and infra nodes fail to provision
+Cluster installation hangs/fails
+```
+
+#### Required KMS Key Policy
+
+The customer must update their KMS key policy to include:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Id": "openshift-ebs-encryption-policy",
+  "Statement": [
+    {
+      "Sid": "Enable IAM User Permissions",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT_ID:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Allow OpenShift Control Plane to use KMS key",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT_ID:role/CONTROL_PLANE_ROLE_NAME"
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:CreateGrant",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Allow OpenShift Worker Nodes to use KMS key",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT_ID:role/WORKER_ROLE_NAME"
+      },
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:CreateGrant",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Allow EC2 service to use KMS key",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": [
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:CreateGrant"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Replace:**
+- `ACCOUNT_ID`: Your AWS account ID
+- `CONTROL_PLANE_ROLE_NAME`: Your control plane IAM role name (from `demo.tfvars`)
+- `WORKER_ROLE_NAME`: Your worker IAM role name (from `demo.tfvars`)
+
+#### Example Configuration Values
+
+From your `demo.tfvars`:
+```hcl
+control_plane_role_name = "ocp-controlplane-demo"
+aws_worker_iam_role     = "ocp-worker-role"
+kms_ec2_alias           = "alias/ec2-ebs"
+```
+
+The KMS policy would use:
+```json
+"Principal": {
+  "AWS": [
+    "arn:aws:iam::051826696190:role/ocp-controlplane-demo",
+    "arn:aws:iam::051826696190:role/ocp-worker-role"
+  ]
+}
+```
+
+#### How to Update KMS Key Policy
+
+**Option 1: AWS Console**
+1. Navigate to: AWS Console → KMS → Customer managed keys
+2. Select your key (e.g., `alias/ec2-ebs`)
+3. Click "Key policy" tab
+4. Click "Edit"
+5. Add the OpenShift statements to the existing policy
+6. Save changes
+
+**Option 2: AWS CLI**
+```bash
+# 1. Get current policy
+aws kms get-key-policy \
+  --key-id <KEY_ID> \
+  --policy-name default \
+  --region <REGION> \
+  --output json > kms-policy.json
+
+# 2. Edit kms-policy.json to add OpenShift statements
+
+# 3. Apply updated policy
+aws kms put-key-policy \
+  --key-id <KEY_ID> \
+  --policy-name default \
+  --policy file://kms-policy.json \
+  --region <REGION>
+```
+
+#### Verification
+
+After updating the KMS policy, verify it includes the OpenShift roles:
+
+```bash
+aws kms get-key-policy \
+  --key-id <KEY_ID> \
+  --policy-name default \
+  --region <REGION> \
+  --output json | jq -r '.Policy' | jq '.Statement'
+```
+
+Look for statements with Principal ARNs matching your OpenShift IAM roles.
+
+#### Timing Considerations
+
+**⚠️ CRITICAL**: The KMS policy must be updated **BEFORE** running `terraform apply`.
+
+**Correct sequence:**
+1. ✅ Customer creates/provides KMS key
+2. ✅ Customer updates KMS key policy with OpenShift role ARNs
+3. ✅ Run Terraform to create cluster
+4. ✅ Worker/infra nodes provision successfully
+
+**Wrong sequence (will fail):**
+1. Customer provides KMS key (without policy update)
+2. ❌ Run Terraform
+3. ❌ Master nodes succeed (created by installer)
+4. ❌ Worker/infra nodes fail with KMS error
+5. Manual fix required
+
+#### Alternative: Use AWS-Managed Default Key
+
+If KMS policy updates are not possible, use the AWS-managed default EBS encryption key:
+
+```hcl
+# In demo.tfvars, comment out or change:
+# kms_ec2_alias = "alias/ec2-ebs"
+kms_ec2_alias = "alias/aws/ebs"  # AWS-managed key (no policy needed)
+```
+
+**Note**: AWS-managed keys have default permissions and don't require policy updates, but offer less control over key management.
+
+#### Troubleshooting KMS Issues
+
+**Symptom**: Worker/infra nodes fail with `Client.InvalidKMSKey.InvalidState`
+
+**Check:**
+```bash
+# 1. Verify KMS key state
+aws kms describe-key --key-id alias/ec2-ebs --region <REGION>
+# KeyState should be "Enabled"
+
+# 2. Verify KMS key policy includes OpenShift roles
+aws kms get-key-policy \
+  --key-id <KEY_ID> \
+  --policy-name default \
+  --region <REGION> \
+  --output json | jq -r '.Policy' | jq '.'
+
+# 3. Check if IAM roles exist
+aws iam get-role --role-name <CONTROL_PLANE_ROLE>
+aws iam get-role --role-name <WORKER_ROLE>
+```
+
+**Fix**: Update KMS policy as documented above, then delete failed machines:
+```bash
+oc delete machine -n openshift-machine-api -l machine.openshift.io/cluster-api-machine-role=worker
+oc delete machine -n openshift-machine-api -l machine.openshift.io/cluster-api-machine-role=infra
+```
+
+New machines will be created automatically with proper KMS access.
 
 ---
 
