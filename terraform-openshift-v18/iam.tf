@@ -208,7 +208,7 @@ data "aws_iam_policy_document" "allow_access_from_another_account" {
 
 # This resource automatically updates the KMS key policy after IAM roles are created
 # to grant OpenShift roles permission to use the KMS key for EBS encryption
-# Uses null_resource with AWS CLI for compatibility with older AWS provider versions
+# Uses local_file + null_resource with AWS CLI for compatibility with older AWS provider versions
 
 locals {
   # Combine Terraform-managed roles with any additional roles (e.g., CSI driver)
@@ -271,42 +271,114 @@ locals {
   })
 }
 
+# Write KMS policy to a file (avoids heredoc issues in null_resource)
+resource "local_file" "kms_policy" {
+  content  = local.kms_policy
+  filename = "${path.module}/kms-policy.json"
+  
+  depends_on = [
+    aws_iam_role.ocpcontrolplane,
+    aws_iam_role.ocpworkernode
+  ]
+}
+
 resource "null_resource" "kms_key_policy" {
-  # Trigger update when roles change
+  # Trigger update when roles change or policy file changes
   triggers = {
     controlplane_role_arn = aws_iam_role.ocpcontrolplane.arn
     worker_role_arn       = aws_iam_role.ocpworkernode.arn
     additional_roles      = join(",", var.kms_additional_role_arns)
     kms_key_id            = data.aws_kms_alias.ec2_cmk_arn.target_key_id
+    policy_hash           = local_file.kms_policy.content_md5
   }
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<-EOT
+      set -e
       echo "Updating KMS key policy for OpenShift EBS encryption..."
+      echo "KMS Key ID: ${data.aws_kms_alias.ec2_cmk_arn.target_key_id}"
+      echo "Region: ${var.region}"
+      echo "Policy file: ${path.module}/kms-policy.json"
       
-      # Write policy to temp file
-      cat > /tmp/kms-policy-$$.json << 'POLICY'
-      ${local.kms_policy}
-      POLICY
+      # Verify policy file exists
+      if [ ! -f "${path.module}/kms-policy.json" ]; then
+        echo "ERROR: Policy file not found!"
+        exit 1
+      fi
       
-      # Apply the policy
-      aws kms put-key-policy \
-        --key-id ${data.aws_kms_alias.ec2_cmk_arn.target_key_id} \
+      # Wait for IAM roles to propagate (AWS eventual consistency)
+      echo "Waiting 15 seconds for IAM roles to propagate..."
+      sleep 15
+      
+      # Verify roles exist before applying policy
+      echo "Verifying IAM roles exist..."
+      for i in 1 2 3 4 5; do
+        ROLE1=$(aws iam get-role --role-name ${aws_iam_role.ocpcontrolplane.name} --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
+        ROLE2=$(aws iam get-role --role-name ${aws_iam_role.ocpworkernode.name} --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
+        
+        if [ "$ROLE1" != "NOT_FOUND" ] && [ "$ROLE2" != "NOT_FOUND" ]; then
+          echo "Both roles found: $ROLE1, $ROLE2"
+          break
+        fi
+        
+        echo "Waiting for roles to be available (attempt $i/5)..."
+        sleep 10
+      done
+      
+      if [ "$ROLE1" = "NOT_FOUND" ] || [ "$ROLE2" = "NOT_FOUND" ]; then
+        echo "ERROR: Roles not available after waiting!"
+        exit 1
+      fi
+      
+      # Show policy content for debugging
+      echo "Policy content:"
+      cat "${path.module}/kms-policy.json" | head -20
+      echo "..."
+      
+      # Apply the policy with retry
+      MAX_RETRIES=3
+      RETRY_COUNT=0
+      SUCCESS=false
+      
+      while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" = "false" ]; do
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        echo "Applying KMS policy (attempt $RETRY_COUNT/$MAX_RETRIES)..."
+        
+        if aws kms put-key-policy \
+          --key-id "${data.aws_kms_alias.ec2_cmk_arn.target_key_id}" \
+          --policy-name default \
+          --policy "file://${path.module}/kms-policy.json" \
+          --region "${var.region}" 2>&1; then
+          SUCCESS=true
+          echo "KMS key policy updated successfully."
+        else
+          echo "Failed attempt $RETRY_COUNT, waiting 10 seconds before retry..."
+          sleep 10
+        fi
+      done
+      
+      if [ "$SUCCESS" = "false" ]; then
+        echo "ERROR: Failed to update KMS key policy after $MAX_RETRIES attempts!"
+        exit 1
+      fi
+      
+      # Verify the policy was applied
+      echo "Verifying KMS policy..."
+      aws kms get-key-policy \
+        --key-id "${data.aws_kms_alias.ec2_cmk_arn.target_key_id}" \
         --policy-name default \
-        --policy file:///tmp/kms-policy-$$.json \
-        --region ${var.region}
-      
-      # Cleanup
-      rm -f /tmp/kms-policy-$$.json
-      
-      echo "KMS key policy updated successfully."
+        --region "${var.region}" \
+        --query Policy --output text | jq '.Statement | length'
     EOT
   }
 
-  # Ensure roles are created before updating KMS policy
+  # Ensure policy file and roles are created before applying
   depends_on = [
+    local_file.kms_policy,
     aws_iam_role.ocpcontrolplane,
-    aws_iam_role.ocpworkernode
+    aws_iam_role.ocpworkernode,
+    aws_iam_role_policy_attachment.ocpcontrolplane-attach,
+    aws_iam_role_policy_attachment.ocpworkernode-attach
   ]
 }
