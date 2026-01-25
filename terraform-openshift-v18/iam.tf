@@ -311,23 +311,32 @@ resource "null_resource" "kms_key_policy" {
       echo "Waiting 15 seconds for IAM roles to propagate..."
       sleep 15
       
-      # Verify roles exist before applying policy
+      # Verify all roles exist before applying policy
       echo "Verifying IAM roles exist..."
+      MACHINE_API_ROLE="${var.cluster_name}-openshift-machine-api-aws-cloud-credentials"
+      
       for i in 1 2 3 4 5; do
         ROLE1=$(aws iam get-role --role-name ${aws_iam_role.ocpcontrolplane.name} --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
         ROLE2=$(aws iam get-role --role-name ${aws_iam_role.ocpworkernode.name} --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
+        ROLE3=$(aws iam get-role --role-name "$MACHINE_API_ROLE" --query 'Role.Arn' --output text 2>/dev/null || echo "NOT_FOUND")
         
-        if [ "$ROLE1" != "NOT_FOUND" ] && [ "$ROLE2" != "NOT_FOUND" ]; then
-          echo "Both roles found: $ROLE1, $ROLE2"
+        if [ "$ROLE1" != "NOT_FOUND" ] && [ "$ROLE2" != "NOT_FOUND" ] && [ "$ROLE3" != "NOT_FOUND" ]; then
+          echo "All roles found:"
+          echo "  - Control plane: $ROLE1"
+          echo "  - Worker: $ROLE2"
+          echo "  - Machine API: $ROLE3"
           break
         fi
         
         echo "Waiting for roles to be available (attempt $i/5)..."
+        echo "  Control plane: $ROLE1"
+        echo "  Worker: $ROLE2"
+        echo "  Machine API: $ROLE3"
         sleep 10
       done
       
-      if [ "$ROLE1" = "NOT_FOUND" ] || [ "$ROLE2" = "NOT_FOUND" ]; then
-        echo "ERROR: Roles not available after waiting!"
+      if [ "$ROLE1" = "NOT_FOUND" ] || [ "$ROLE2" = "NOT_FOUND" ] || [ "$ROLE3" = "NOT_FOUND" ]; then
+        echo "ERROR: One or more roles not available after waiting!"
         exit 1
       fi
       
@@ -373,12 +382,15 @@ resource "null_resource" "kms_key_policy" {
     EOT
   }
 
-  # Ensure policy file and roles are created before applying
+  # Ensure policy file, roles, and ccoctl roles are created before applying
+  # The Machine API role is created by ccoctl (null_resource.create_roles in main.openshift.tf)
+  # and needs to be in the KMS policy for EC2 instance launches with encrypted EBS
   depends_on = [
     local_file.kms_policy,
     aws_iam_role.ocpcontrolplane,
     aws_iam_role.ocpworkernode,
     aws_iam_role_policy_attachment.ocpcontrolplane-attach,
-    aws_iam_role_policy_attachment.ocpworkernode-attach
+    aws_iam_role_policy_attachment.ocpworkernode-attach,
+    null_resource.create_roles
   ]
 }

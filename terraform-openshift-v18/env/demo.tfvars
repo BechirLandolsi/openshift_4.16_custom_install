@@ -81,18 +81,25 @@ kms_ec2_alias = "alias/your-kms-key-alias"
 # Additional IAM role ARNs to include in KMS key policy for EBS encryption
 # These roles will be granted permission to use the KMS key for encryption/decryption
 #
-# The CSI driver role is created by ccoctl and follows this naming pattern:
-#   arn:aws:iam::<ACCOUNT_ID>:role/<CLUSTER_NAME>-openshift-cluster-csi-drivers-ebs-cloud-credentia
+# REQUIRED ROLES (created by ccoctl, must be added here):
+#
+# 1. Machine API role - Creates EC2 instances with encrypted EBS volumes
+#    Pattern: <CLUSTER_NAME>-openshift-machine-api-aws-cloud-credentials
+#
+# 2. CSI EBS driver role - Creates encrypted persistent volumes
+#    Pattern: <CLUSTER_NAME>-openshift-cluster-csi-drivers-ebs-cloud-credentia
+#
+# To find these roles after ccoctl runs:
+#   aws iam list-roles --query "Roles[?contains(RoleName, 'machine-api') || contains(RoleName, 'ebs-cloud')].Arn" --output text
 #
 # Example:
 #   kms_additional_role_arns = [
+#     "arn:aws:iam::123456789012:role/my-cluster-openshift-machine-api-aws-cloud-credentials",
 #     "arn:aws:iam::123456789012:role/my-cluster-openshift-cluster-csi-drivers-ebs-cloud-credentia"
 #   ]
 #
-# To find your CSI driver role after ccoctl runs:
-#   aws iam list-roles --query "Roles[?contains(RoleName, 'ebs-cloud-credenti')].Arn" --output text
-#
 kms_additional_role_arns = [
+  "arn:aws:iam::XXXXXXXXXXXX:role/CLUSTER_NAME-openshift-machine-api-aws-cloud-credentials",
   "arn:aws:iam::XXXXXXXXXXXX:role/CLUSTER_NAME-openshift-cluster-csi-drivers-ebs-cloud-credentia"
 ]
 
