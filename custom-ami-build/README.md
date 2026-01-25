@@ -5,24 +5,59 @@ This directory contains the **official Red Hat documented process** for creating
 **Method**: VMDK import (Red Hat official supported method)  
 **Reference**: [Red Hat OpenShift 4.16 Documentation - Custom RHCOS AMI Upload](https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#installation-aws-upload-custom-rhcos-ami_installing-aws-secret-region)
 
-## Why This Approach?
+## Why Pre-Encrypt the AMI?
 
-This method follows Red Hat's official documentation and is the same process your Red Hat consultant provided for OpenShift 4.14. Using the official method ensures:
+**Critical**: When using KMS-encrypted EBS volumes with OpenShift, the AMI **must be encrypted with the same KMS key** you want to use for EC2 instances. If you try to launch an instance from an AMI encrypted with Key-A and specify Key-B in the MachineSet, AWS will terminate the instance with `InvalidKMSKey.InvalidState`.
 
-- ✅ Red Hat support compatibility
-- ✅ Proven procedure (used in your 4.14 deployment)
-- ✅ KMS encryption for compliance
-- ✅ Consistent with Red Hat best practices
+### Benefits of Pre-Encrypted AMI
 
-## Quick Reference: Common Commands
+- ✅ **No key mismatch errors** - AMI encryption is inherited at launch
+- ✅ **Simplified Terraform** - No need to specify `kmsKeyARN` in install-config
+- ✅ **Red Hat support compatibility** - Official documented process
+- ✅ **Consistent encryption** - All root volumes use the same CMK
+- ✅ **Compliance ready** - Customer-managed keys for audit requirements
 
-### Find/Create KMS Key
+## Quick Start (Recommended Workflow)
+
 ```bash
-# List existing keys
-aws kms list-aliases --region eu-west-1
+# Step 1: Create KMS key (or use existing)
+./create-kms-key.sh
 
-# Create new key
-aws kms create-key --description "OpenShift EBS Encryption" --region eu-west-1
+# Step 2: Source the KMS key details
+source kms-key-result.env
+
+# Step 3: Create encrypted AMI
+./create-custom-ami.sh
+
+# Step 4: Source the AMI details
+source custom-ami-result.env
+
+# Step 5: Update Terraform tfvars with AMI ID and KMS alias
+echo "ami = \"$CUSTOM_AMI\""
+echo "kms_ec2_alias = \"$KMS_KEY_ALIAS\""
+```
+
+## Files in This Directory
+
+| File | Description |
+|------|-------------|
+| `create-kms-key.sh` | Creates KMS key with bootstrap policy |
+| `create-custom-ami.sh` | Creates RHCOS AMI encrypted with your KMS key |
+| `kms-bootstrap-policy.json` | Template for initial KMS key policy |
+| `kms-key-result.env` | Generated - KMS key details (after running create-kms-key.sh) |
+| `custom-ami-result.env` | Generated - AMI details (after running create-custom-ami.sh) |
+| `README.md` | This documentation |
+
+## Quick Reference Commands
+
+### Create KMS Key
+```bash
+# Option 1: Use the provided script (recommended)
+./create-kms-key.sh
+
+# Option 2: Manual creation
+aws kms create-key --description "OpenShift EBS Encryption" --region eu-west-3
+aws kms create-alias --alias-name alias/openshift-ebs-encryption --target-key-id <KEY_ID> --region eu-west-3
 ```
 
 ### Check vmimport Role
@@ -35,9 +70,8 @@ aws iam get-role --role-name vmimport
 
 ### Run AMI Creation
 ```bash
-export RHCOS_VERSION="4.16.51"
-export AWS_REGION="eu-west-1"
-export KMS_KEY_ID="alias/your-key-name"  # or ARN
+# After creating/sourcing KMS key
+source kms-key-result.env
 ./create-custom-ami.sh
 ```
 
@@ -614,13 +648,41 @@ aws ec2 describe-images \
 
 ## Using the Custom AMI
 
-Update your Terraform variables file:
+### Update Terraform Variables
 
 ```hcl
 # In terraform-openshift-v18/env/your-cluster.tfvars
+
+# AMI ID (same for all node types)
 ami               = "ami-0abcdef1234567890"  # Your custom AMI ID
 aws_worker_iam_id = "ami-0abcdef1234567890"  # Same AMI ID
+
+# KMS alias for policy management (Terraform updates the policy)
+kms_ec2_alias = "alias/openshift-ebs-encryption"
+
+# Additional roles for KMS policy (created by ccoctl)
+kms_additional_role_arns = [
+  "arn:aws:iam::123456789012:role/my-cluster-openshift-machine-api-aws-cloud-credentials",
+  "arn:aws:iam::123456789012:role/my-cluster-openshift-cluster-csi-drivers-ebs-cloud-credentia"
+]
 ```
+
+### What You DON'T Need
+
+Since the AMI is pre-encrypted with your CMK, you **do NOT** need to specify `kmsKeyARN` in:
+
+- ❌ `install-config.yaml` - No `kmsKeyARN` needed for root volumes
+- ❌ MachineSet templates - No `kmsKey` block needed
+
+The encryption is automatically inherited from the AMI.
+
+### What Terraform Still Manages
+
+Even with a pre-encrypted AMI, Terraform still:
+
+- ✅ Updates KMS key policy to grant `kms:CreateGrant` to IAM roles
+- ✅ This is required because EC2 must create grants to decrypt volumes for new instances
+- ✅ The Machine API and CSI driver roles need this permission
 
 ## Configuring IMDSv2 (Separate from AMI)
 
@@ -927,10 +989,17 @@ aws ec2 describe-images --region "$AWS_REGION" --image-ids "$CUSTOM_AMI"
 
 ## Files in This Directory
 
-- `create-custom-ami.sh`: Automated script (recommended)
-- `README.md`: This file
-- `custom-ami-result.env`: Generated file with AMI details (after creation)
-- `containers.json`: Generated import configuration (temporary)
+| File | Type | Description |
+|------|------|-------------|
+| `create-kms-key.sh` | Script | Creates KMS key with bootstrap policy for OpenShift |
+| `create-custom-ami.sh` | Script | Creates RHCOS AMI encrypted with your KMS key |
+| `kms-bootstrap-policy.json` | Template | Initial KMS key policy (Terraform updates it later) |
+| `README.md` | Documentation | This file |
+| `kms-key-result.env` | Generated | KMS key details (after running create-kms-key.sh) |
+| `custom-ami-result.env` | Generated | AMI details (after running create-custom-ami.sh) |
+| `containers.json` | Generated | Import configuration (temporary, can delete) |
+| `trust-policy.json` | Generated | vmimport trust policy (if created) |
+| `role-policy.json` | Generated | vmimport role policy (if created) |
 
 ## Timeline
 

@@ -2,20 +2,39 @@
 # Script to create custom RHCOS AMI with KMS encryption for OpenShift 4.16
 # Based on Red Hat official documentation:
 # https://docs.redhat.com/en/documentation/openshift_container_platform/4.16/html/installing_on_aws/installer-provisioned-infrastructure#installation-aws-upload-custom-rhcos-ami_installing-aws-secret-region
+#
+# IMPORTANT: The AMI created by this script is pre-encrypted with your CMK.
+# When using this AMI with OpenShift, you do NOT need to specify kmsKeyARN
+# in install-config.yaml - the encryption is inherited from the AMI.
 
 set -euo pipefail
 
-# Configuration variables - UPDATE THESE
+# Configuration variables - UPDATE THESE or source from kms-key-result.env
 RHCOS_VERSION="${RHCOS_VERSION:-4.16.51}"
-REGION="${AWS_REGION:-eu-west-1}"
-KMS_KEY_ID="${KMS_KEY_ID:-}"  # ARN or alias of your KMS key
+REGION="${AWS_REGION:-eu-west-3}"
+KMS_KEY_ID="${KMS_KEY_ID:-}"  # ARN, Key ID, or alias of your KMS key
 S3_BUCKET_NAME="${S3_BUCKET_NAME:-rhcos-import-${REGION}-$(date +%s)}"
+
+# Try to source KMS key from result file if not set
+if [ -z "$KMS_KEY_ID" ] && [ -f "kms-key-result.env" ]; then
+    echo "Sourcing KMS key from kms-key-result.env..."
+    source kms-key-result.env
+    KMS_KEY_ID="${KMS_KEY_ARN:-$KMS_KEY_ID}"
+fi
 
 # Validate required variables
 if [ -z "$KMS_KEY_ID" ]; then
     echo "ERROR: KMS_KEY_ID environment variable must be set"
-    echo "Example: export KMS_KEY_ID='arn:aws:kms:eu-west-1:123456789012:key/...'"
-    echo "     or: export KMS_KEY_ID='alias/my-kms-key'"
+    echo ""
+    echo "Option 1: Create KMS key first:"
+    echo "  ./create-kms-key.sh"
+    echo "  source kms-key-result.env"
+    echo "  ./create-custom-ami.sh"
+    echo ""
+    echo "Option 2: Set environment variable manually:"
+    echo "  export KMS_KEY_ID='arn:aws:kms:eu-west-3:123456789012:key/...'"
+    echo "  # or: export KMS_KEY_ID='alias/openshift-ebs-encryption'"
+    echo "  ./create-custom-ami.sh"
     exit 1
 fi
 
@@ -211,23 +230,57 @@ echo "To delete local files (saves ~16GB):"
 echo "  rm ${VMDK_FILE}"
 echo "  # Keep compressed file: ${VMDK_GZ_FILE}"
 
+# Verify AMI encryption
+echo ""
+echo -e "${YELLOW}Verifying AMI encryption...${NC}"
+AMI_ENCRYPTION=$(aws ec2 describe-images \
+  --region "$REGION" \
+  --image-ids "$CUSTOM_AMI" \
+  --query 'Images[0].BlockDeviceMappings[0].Ebs.Encrypted' \
+  --output text)
+
+SNAPSHOT_KMS=$(aws ec2 describe-snapshots \
+  --region "$REGION" \
+  --snapshot-ids "$SNAPSHOT_ID" \
+  --query 'Snapshots[0].KmsKeyId' \
+  --output text)
+
+echo "AMI Encrypted: $AMI_ENCRYPTION"
+echo "Snapshot KMS Key: $SNAPSHOT_KMS"
+
 # Summary
 echo ""
 echo -e "${GREEN}======================================${NC}"
 echo -e "${GREEN}Custom AMI Creation Complete!${NC}"
 echo -e "${GREEN}======================================${NC}"
 echo ""
-echo "AMI ID: $CUSTOM_AMI"
-echo "Region: $REGION"
-echo "RHCOS Version: $RHCOS_VERSION"
+echo "AMI Details:"
+echo "  AMI ID:        $CUSTOM_AMI"
+echo "  Region:        $REGION"
+echo "  RHCOS Version: $RHCOS_VERSION"
+echo "  Encrypted:     $AMI_ENCRYPTION"
+echo "  KMS Key:       $KMS_KEY_ID"
+echo ""
+echo -e "${BLUE}IMPORTANT: This AMI is pre-encrypted with your CMK.${NC}"
+echo -e "${BLUE}You do NOT need to specify kmsKeyARN in install-config.yaml.${NC}"
+echo -e "${BLUE}The encryption is automatically inherited from the AMI.${NC}"
 echo ""
 echo "Next steps:"
-echo "1. Source the environment file: source custom-ami-result.env"
-echo "2. Use AMI ID in terraform tfvars:"
-echo "   ami = \"$CUSTOM_AMI\""
+echo ""
+echo "1. Source the environment file:"
+echo "   source custom-ami-result.env"
+echo ""
+echo "2. Update terraform tfvars with the AMI ID:"
+echo "   ami               = \"$CUSTOM_AMI\""
 echo "   aws_worker_iam_id = \"$CUSTOM_AMI\""
 echo ""
-echo "3. Configure IMDSv2 in install-config.yaml:"
+echo "3. Update terraform tfvars with KMS alias (for policy management):"
+echo "   kms_ec2_alias = \"alias/openshift-ebs-encryption\"  # or your alias"
+echo ""
+echo "4. (Optional) Configure IMDSv2 in install-config.yaml:"
 echo "   metadataService:"
 echo "     authentication: Required"
+echo ""
+echo -e "${GREEN}The KMS key policy will be automatically updated by Terraform${NC}"
+echo -e "${GREEN}to grant OpenShift roles (Machine API, CSI driver) access.${NC}"
 echo ""

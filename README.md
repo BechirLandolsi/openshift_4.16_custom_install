@@ -180,7 +180,53 @@ OpenShift creates encrypted EBS volumes for:
 - Infrastructure node root volumes
 - Persistent volumes (PVs) for applications
 
-When specifying a custom KMS key, AWS requires the IAM roles launching EC2 instances to have explicit permissions in the KMS key policy.
+#### Recommended Approach: Pre-Encrypted AMI
+
+**IMPORTANT**: For reliable KMS encryption, the RHCOS AMI should be **pre-encrypted with your CMK** during AMI creation. This avoids key mismatch errors at instance launch.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  BEST PRACTICE: Pre-Encrypted AMI Workflow                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Create KMS key with bootstrap policy                        │
+│        ↓                                                        │
+│  2. Create RHCOS AMI encrypted with that KMS key                │
+│        ↓                                                        │
+│  3. Use pre-encrypted AMI in Terraform                          │
+│        ↓                                                        │
+│  4. Terraform updates KMS policy with role ARNs                 │
+│        ↓                                                        │
+│  5. EC2 instances inherit AMI's encryption (no key mismatch!)   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Scripts provided in `custom-ami-build/` directory:**
+
+| Script | Purpose |
+|--------|---------|
+| `create-kms-key.sh` | Creates KMS key with bootstrap policy |
+| `create-custom-ami.sh` | Creates RHCOS AMI encrypted with your KMS key |
+| `kms-bootstrap-policy.json` | Template for initial KMS key policy |
+
+**Quick Start:**
+
+```bash
+cd custom-ami-build/
+
+# Step 1: Create KMS key
+./create-kms-key.sh
+source kms-key-result.env
+
+# Step 2: Create encrypted AMI
+./create-custom-ami.sh
+source custom-ami-result.env
+
+# Step 3: Update terraform tfvars
+echo "ami = \"$CUSTOM_AMI\""
+echo "kms_ec2_alias = \"$KMS_KEY_ALIAS\""
+```
 
 #### How It Works: Two-Phase KMS Policy
 
@@ -188,21 +234,30 @@ This Terraform deployment uses a **two-phase approach** to handle the chicken-an
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 1: Bootstrap (Manual - Before terraform apply)           │
+│ PHASE 1: Bootstrap (During AMI creation)                        │
 ├─────────────────────────────────────────────────────────────────┤
-│ Apply minimal KMS policy with root account access only         │
-│ This allows Terraform to create IAM roles                      │
+│ • KMS key created with bootstrap policy (root account only)     │
+│ • RHCOS AMI encrypted with this KMS key                         │
+│ • vmimport role granted access to use the key                   │
 └─────────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ PHASE 2: Automatic (During terraform apply)                    │
+│ PHASE 2: Automatic (During terraform apply)                     │
 ├─────────────────────────────────────────────────────────────────┤
-│ 1. Terraform creates IAM roles (control plane, worker)         │
-│ 2. Terraform automatically updates KMS policy with role ARNs   │
-│ 3. OpenShift installer launches EC2 instances                  │
-│ 4. EC2 instances can now use KMS key for EBS encryption        │
+│ 1. Terraform creates IAM roles (control plane, worker)          │
+│ 2. ccoctl creates OIDC roles (Machine API, CSI driver)          │
+│ 3. Terraform updates KMS policy with all role ARNs              │
+│ 4. OpenShift installer launches EC2 with pre-encrypted AMI      │
+│ 5. Roles can create grants for new instances (kms:CreateGrant)  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**Why kms:CreateGrant is still needed with pre-encrypted AMI:**
+
+Even when using a pre-encrypted AMI, the Machine API role still needs `kms:CreateGrant` permission. When launching a new EC2 instance:
+1. EC2 creates a copy of the encrypted root volume from the AMI snapshot
+2. EC2 must create a KMS grant to allow the new instance to decrypt the volume
+3. The caller (Machine API) needs `kms:CreateGrant` to authorize this
 
 #### Phase 1: Bootstrap KMS Policy (Manual)
 

@@ -19,7 +19,7 @@ controlPlane:
         iops: ${var.aws_master_volume_iops}
         size: ${var.aws_master_volume_size}
         type: ${var.aws_master_volume_type}
-        kmsKeyARN: ${data.aws_kms_alias.ec2_cmk_arn.target_key_arn}
+        # kmsKeyARN not needed - AMI is already encrypted with the CMK
       type: ${var.aws_master_instance_type}
   replicas: ${var.master_count}
 
@@ -36,7 +36,7 @@ compute:
         iops: ${var.aws_worker_root_volume_iops}
         size: ${var.aws_worker_root_volume_size}
         type: ${var.aws_worker_root_volume_type}
-        kmsKeyARN: ${data.aws_kms_alias.ec2_cmk_arn.target_key_arn}
+        # kmsKeyARN not needed - AMI is already encrypted with the CMK
       type: ${var.aws_worker_instance_type}
   replicas: ${var.worker_count}
 
@@ -176,10 +176,8 @@ spec:
           apiVersion: machine.openshift.io/v1beta1
           blockDevices:
           - ebs:
-              encrypted: true
+              # encrypted/kmsKey not needed - AMI is already encrypted with the CMK
               iops: ${var.aws_infra_root_volume_iops}
-              kmsKey:
-                arn: ${data.aws_kms_alias.ec2_cmk_arn.target_key_arn}
               volumeSize: ${var.aws_infra_root_volume_size}
               volumeType: ${var.aws_infra_root_volume_type}
           credentialsSecret:
