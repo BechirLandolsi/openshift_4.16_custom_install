@@ -35,8 +35,8 @@ CLUSTER_NAME=$(grep '^cluster_name' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 INFRA_ID=$(grep '^infra_random_id' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 REGION=$(grep '^region' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 
-PRIVATE_SUBNETS=$(grep '^aws_private_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | tr -d ' ' | grep -v '^$')
-PUBLIC_SUBNETS=$(grep '^aws_public_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | tr -d ' ' | grep -v '^$')
+PRIVATE_SUBNETS=$(grep '^aws_private_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
+PUBLIC_SUBNETS=$(grep '^aws_public_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
 
 CLUSTER_TAG="kubernetes.io/cluster/${CLUSTER_NAME}-${INFRA_ID}"
 

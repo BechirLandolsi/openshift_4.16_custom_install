@@ -43,8 +43,8 @@ ACCOUNT_ID=$(grep '^account_id' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 CONTROL_PLANE_ROLE=$(grep '^control_plane_role_name' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 WORKER_ROLE=$(grep '^aws_worker_iam_role' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 
-PRIVATE_SUBNETS=$(grep '^aws_private_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | tr -d ' ' | grep -v '^$')
-PUBLIC_SUBNETS=$(grep '^aws_public_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | tr -d ' ' | grep -v '^$')
+PRIVATE_SUBNETS=$(grep '^aws_private_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
+PUBLIC_SUBNETS=$(grep '^aws_public_subnets' "$TFVARS_FILE" | sed 's/.*= \[//' | sed 's/\]//' | tr ',' '\n' | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')
 
 echo -e "${GREEN}✓ Control Plane Role: ${CONTROL_PLANE_ROLE}${NC}"
 echo -e "${GREEN}✓ Worker Role: ${WORKER_ROLE}${NC}"
