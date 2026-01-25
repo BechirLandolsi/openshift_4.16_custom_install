@@ -201,8 +201,14 @@ variable "openshift_installer_url" {
 
 variable "aws_private_subnets" {
   type = list(string)
-  description = "The private subnets for workers. This is used when the subnets are preconfigured."
+  description = "The private subnets for nodes (masters and workers)"
   #default     = ["subnet-00d6c2c8838022ea5","subnet-05d4f90204e618402","subnet-0c61e630d0c480f9f"]
+}
+
+variable "aws_public_subnets" {
+  type = list(string)
+  description = "The public subnets where NAT Gateways are located. Required even for Internal clusters."
+  default     = []
 }
 
 variable "openshift_ssh_key" {

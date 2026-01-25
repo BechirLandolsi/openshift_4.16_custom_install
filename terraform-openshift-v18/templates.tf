@@ -49,7 +49,8 @@ platform:
     amiID: ${var.ami}
     hostedZone: ${var.hosted_zone}
     subnets: %{ for subnet in var.aws_private_subnets}
-    - ${subnet}%{ endfor }
+    - ${subnet}%{ endfor }%{ if length(var.aws_public_subnets) > 0}%{ for subnet in var.aws_public_subnets}
+    - ${subnet}%{ endfor }%{ endif }
     lbType: NLB
     userTags: %{ for key, value in var.tags}
       "${key}": ${value} %{ endfor }

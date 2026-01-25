@@ -6,7 +6,17 @@ resource "null_resource" "openshift_prepare" {
   }
   provisioner "local-exec" {
     interpreter = ["bash","-c"]
-    command     = "cp output/manifests/* installer-files/manifests/"
+    command     = <<EOT
+      # Copy ccoctl-generated manifests (critical for STS authentication)
+      if [ -d output/manifests ] && [ "$(ls -A output/manifests)" ]; then
+        echo "Copying ccoctl manifests to installer-files/manifests/..."
+        cp -v output/manifests/* installer-files/manifests/
+        echo "Manifests copied successfully"
+      else
+        echo "ERROR: output/manifests/ is empty or does not exist!"
+        exit 1
+      fi
+    EOT
   }
   provisioner "local-exec" {
     interpreter = ["bash","-c"]

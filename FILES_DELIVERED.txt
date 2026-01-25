@@ -321,6 +321,16 @@ terraform-openshift-v18/manual-cleanup.sh
     - Use when terraform destroy fails
     - Configured for eu-west-3 region
 
+terraform-openshift-v18/force-delete-iam.sh
+    Force delete IAM resources causing EntityAlreadyExists errors:
+    - Detaches all managed policies from roles
+    - Deletes all inline policies from roles
+    - Removes roles from instance profiles
+    - Deletes policies after detaching from all entities
+    - Handles all edge cases (users, groups, versions)
+    - Deletes OIDC S3 bucket
+    - Safe to run multiple times (checks existence first)
+
 terraform-openshift-v18/delete-role.sh
     Single IAM role deletion:
     - Deletes one specific IAM role by name
@@ -384,11 +394,11 @@ FILE COUNT SUMMARY
 Documentation:              6 files
 Configuration:              5 files
 Terraform Resources:       11 files
-Shell Scripts:             14 files
+Shell Scripts:             15 files
 Source Code (Go):           4 files
 Git/Editor Config:          3 files
                           ---
-TOTAL:                     43 files
+TOTAL:                     44 files
 
 ================================================================================
 MODIFICATION TRACKING

@@ -1,5 +1,5 @@
 account_id              = "XXXXXXXXXXXX"
-region                  = "eu-west-1"
+region                  = "eu-west-3"
 vpc_id                  = "vpc-XXXXXXXXXXXXXXXXX"
 ccoe_boundary           = "arn:aws:iam::XXXXXXXXXXXX:policy/XXX-boundarie-iam-policy"
 release_image           = "quay.io/openshift-release-dev/ocp-release:4.16.9-x86_64"       #Change to: your-registry.company.com/ocp-release:4.16.9-x86_64 if you are in a disconnected environment
@@ -15,10 +15,11 @@ aws_worker_iam_id             = "ami-XXXXXXXXXXXXXXXXX"
 hosted_zone                   = "XXXXXXXXXXXXXXXXXXXXXX"
 
 
-aws_worker_availability_zones = ["eu-west-1a","eu-west-1b","eu-west-1c"]
+aws_worker_availability_zones = ["eu-west-3a","eu-west-3b","eu-west-3c"]
 openshift_pull_secret         = "openshift/openshift_pull_secret.json"
 openshift_installer_url       = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest"
 aws_private_subnets           = ["subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX"]
+aws_public_subnets            = ["subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX"]
 route_default                 = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX-XXXXXXXXXXXXXXXXX.elb.eu-west-1.amazonaws.com"
 proxy_config                  = {
     enabled    = false
@@ -87,7 +88,7 @@ aws_worker_root_volume_iops = "3000"
 # Infra nodes run: ingress router, monitoring, logging, registry
 # Set to "0" to skip infra nodes and run on workers
 # Set to "1" for dedicated infra nodes (recommended for production)
-aws_infra_count_per_availability_zone = "0"
+aws_infra_count_per_availability_zone = "1"
 
 # EC2 instance type for infra nodes
 aws_infra_instance_type = "m5.xlarge"
