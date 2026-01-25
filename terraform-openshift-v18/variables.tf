@@ -250,6 +250,12 @@ variable "kms_ec2_alias" {
   description = "KMS master key to encrypt ec2 EBS volumes"
 }
 
+variable "kms_additional_role_arns" {
+  type        = list(string)
+  description = "Additional IAM role ARNs to include in KMS key policy (e.g., CSI driver role)"
+  default     = []
+}
+
 
 ##########################
 ########### INFRA RELATED

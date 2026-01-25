@@ -170,9 +170,9 @@ Before starting the installation, the customer **must provide or prepare**:
 
 ### KMS Key Configuration for EBS Encryption
 
-If using customer-managed KMS keys for EBS volume encryption, the KMS key policy **must** grant permissions to OpenShift IAM roles **before** installation begins.
+If using customer-managed KMS keys for EBS volume encryption, proper KMS key policy configuration is required.
 
-#### Why This is Required
+#### Overview
 
 OpenShift creates encrypted EBS volumes for:
 - Control plane node root volumes (etcd data)
@@ -180,20 +180,105 @@ OpenShift creates encrypted EBS volumes for:
 - Infrastructure node root volumes
 - Persistent volumes (PVs) for applications
 
-When specifying a custom KMS key, AWS requires the IAM roles creating EC2 instances to have explicit permissions in the KMS key policy.
+When specifying a custom KMS key, AWS requires the IAM roles launching EC2 instances to have explicit permissions in the KMS key policy.
 
-#### Failure Scenario Without Proper KMS Policy
+#### How It Works: Two-Phase KMS Policy
+
+This Terraform deployment uses a **two-phase approach** to handle the chicken-and-egg problem (roles must exist before adding them to KMS policy, but KMS policy is needed before roles can use the key):
 
 ```
-Instance Launch → Create Encrypted EBS → KMS Permission Check → ❌ DENIED
-Result: Client.InvalidKMSKey.InvalidState error
-All worker and infra nodes fail to provision
-Cluster installation hangs/fails
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE 1: Bootstrap (Manual - Before terraform apply)           │
+├─────────────────────────────────────────────────────────────────┤
+│ Apply minimal KMS policy with root account access only         │
+│ This allows Terraform to create IAM roles                      │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ PHASE 2: Automatic (During terraform apply)                    │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. Terraform creates IAM roles (control plane, worker)         │
+│ 2. Terraform automatically updates KMS policy with role ARNs   │
+│ 3. OpenShift installer launches EC2 instances                  │
+│ 4. EC2 instances can now use KMS key for EBS encryption        │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Required KMS Key Policy
+#### Phase 1: Bootstrap KMS Policy (Manual)
 
-The customer must update their KMS key policy to include:
+**Before running `terraform apply`**, apply this minimal bootstrap policy to your KMS key:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Id": "openshift-bootstrap-policy",
+  "Statement": [
+    {
+      "Sid": "Enable IAM User Permissions",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT_ID:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Replace** `ACCOUNT_ID` with your AWS account ID.
+
+**Apply the bootstrap policy:**
+
+```bash
+# Save the policy to a file
+cat > kms-bootstrap-policy.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Id": "openshift-bootstrap-policy",
+  "Statement": [
+    {
+      "Sid": "Enable IAM User Permissions",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::ACCOUNT_ID:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    }
+  ]
+}
+EOF
+
+# Replace ACCOUNT_ID with your actual account ID
+sed -i 's/ACCOUNT_ID/123456789012/g' kms-bootstrap-policy.json
+
+# Get KMS key ID from alias
+KMS_KEY_ID=$(aws kms describe-key --key-id alias/your-kms-alias --region <REGION> \
+  --query 'KeyMetadata.KeyId' --output text)
+
+# Apply the bootstrap policy
+aws kms put-key-policy \
+  --key-id $KMS_KEY_ID \
+  --policy-name default \
+  --policy file://kms-bootstrap-policy.json \
+  --region <REGION>
+```
+
+#### Phase 2: Automatic Policy Update (Terraform)
+
+During `terraform apply`, the following happens automatically:
+
+1. **Terraform creates IAM roles:**
+   - Control plane role (e.g., `ocpcontrolplane-iam-role`)
+   - Worker node role (e.g., `ocpworkernode-iam-role`)
+
+2. **Terraform updates KMS policy** via `null_resource.kms_key_policy` in `iam.tf`:
+   - Adds role ARNs to the KMS policy
+   - Includes additional roles from `kms_additional_role_arns` variable (e.g., CSI driver role)
+   - Applies proper permissions with `kms:GrantIsForAWSResource` condition
+
+3. **Final KMS policy** applied by Terraform:
 
 ```json
 {
@@ -210,179 +295,205 @@ The customer must update their KMS key policy to include:
       "Resource": "*"
     },
     {
-      "Sid": "Allow OpenShift Control Plane to use KMS key",
+      "Sid": "Allow OpenShift roles to use the key",
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::ACCOUNT_ID:role/CONTROL_PLANE_ROLE_NAME"
+        "AWS": [
+          "arn:aws:iam::ACCOUNT_ID:role/CONTROL_PLANE_ROLE",
+          "arn:aws:iam::ACCOUNT_ID:role/WORKER_ROLE",
+          "arn:aws:iam::ACCOUNT_ID:role/CSI_DRIVER_ROLE"
+        ]
       },
       "Action": [
         "kms:Encrypt",
         "kms:Decrypt",
         "kms:ReEncrypt*",
         "kms:GenerateDataKey*",
-        "kms:CreateGrant",
         "kms:DescribeKey"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "Allow OpenShift Worker Nodes to use KMS key",
+      "Sid": "Allow OpenShift roles to manage grants",
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::ACCOUNT_ID:role/WORKER_ROLE_NAME"
+        "AWS": [
+          "arn:aws:iam::ACCOUNT_ID:role/CONTROL_PLANE_ROLE",
+          "arn:aws:iam::ACCOUNT_ID:role/WORKER_ROLE",
+          "arn:aws:iam::ACCOUNT_ID:role/CSI_DRIVER_ROLE"
+        ]
       },
       "Action": [
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:ReEncrypt*",
-        "kms:GenerateDataKey*",
         "kms:CreateGrant",
-        "kms:DescribeKey"
+        "kms:ListGrants",
+        "kms:RevokeGrant"
       ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "Allow EC2 service to use KMS key",
-      "Effect": "Allow",
-      "Principal": {
-        "Service": "ec2.amazonaws.com"
-      },
-      "Action": [
-        "kms:Decrypt",
-        "kms:GenerateDataKey",
-        "kms:CreateGrant"
-      ],
-      "Resource": "*"
+      "Resource": "*",
+      "Condition": {
+        "Bool": {
+          "kms:GrantIsForAWSResource": "true"
+        }
+      }
     }
   ]
 }
 ```
 
-**Replace:**
-- `ACCOUNT_ID`: Your AWS account ID
-- `CONTROL_PLANE_ROLE_NAME`: Your control plane IAM role name (from `demo.tfvars`)
-- `WORKER_ROLE_NAME`: Your worker IAM role name (from `demo.tfvars`)
+#### Configuration in demo.tfvars
 
-#### Example Configuration Values
-
-From your `demo.tfvars`:
 ```hcl
-control_plane_role_name = "ocp-controlplane-demo"
-aws_worker_iam_role     = "ocp-worker-role"
-kms_ec2_alias           = "alias/ec2-ebs"
+# KMS key alias for EBS encryption
+kms_ec2_alias = "alias/your-kms-key-alias"
+
+# Additional role ARNs to include in KMS policy
+# The CSI driver role is created by ccoctl and follows this pattern:
+#   arn:aws:iam::<ACCOUNT_ID>:role/<CLUSTER_NAME>-openshift-cluster-csi-drivers-ebs-cloud-credentia
+#
+# To find your CSI driver role after ccoctl runs:
+#   aws iam list-roles --query "Roles[?contains(RoleName, 'ebs-cloud-credenti')].Arn" --output text
+#
+kms_additional_role_arns = [
+  "arn:aws:iam::ACCOUNT_ID:role/CLUSTER_NAME-openshift-cluster-csi-drivers-ebs-cloud-credentia"
+]
 ```
 
-The KMS policy would use:
+#### Complete Installation Sequence
+
+```bash
+# 1. Apply bootstrap KMS policy (Phase 1)
+aws kms put-key-policy \
+  --key-id $KMS_KEY_ID \
+  --policy-name default \
+  --policy file://kms-bootstrap-policy.json \
+  --region <REGION>
+
+# 2. Run Terraform (Phase 2 - automatic)
+terraform init
+terraform plan -var-file=env/demo.tfvars
+terraform apply -var-file=env/demo.tfvars
+
+# Terraform will:
+# - Create IAM roles
+# - Update KMS policy with role ARNs
+# - Run OpenShift installer
+# - EC2 instances launch with KMS access
+```
+
+#### Why This Approach?
+
+| Challenge | Solution |
+|-----------|----------|
+| KMS policy requires role ARNs | Terraform updates policy after creating roles |
+| Roles don't exist before Terraform runs | Bootstrap policy allows initial Terraform execution |
+| Timing between role creation and instance launch | `depends_on` ensures policy is updated before installer runs |
+| CSI driver role created by ccoctl, not Terraform | `kms_additional_role_arns` variable includes external roles |
+
+#### Understanding IAM Roles for EC2 Instances
+
+The IAM roles (e.g., `ocpcontrolplane-iam-role`, `ocpworkernode-iam-role`) are **EC2 instance roles**, not user-assumable roles. Their trust policy allows only the EC2 service to assume them:
+
 ```json
-"Principal": {
-  "AWS": [
-    "arn:aws:iam::051826696190:role/ocp-controlplane-demo",
-    "arn:aws:iam::051826696190:role/ocp-worker-role"
-  ]
+{
+  "Principal": {
+    "Service": "ec2.amazonaws.com"
+  },
+  "Action": "sts:AssumeRole"
 }
 ```
 
-#### How to Update KMS Key Policy
+**How EC2 instances use the roles:**
 
-**Option 1: AWS Console**
-1. Navigate to: AWS Console → KMS → Customer managed keys
-2. Select your key (e.g., `alias/ec2-ebs`)
-3. Click "Key policy" tab
-4. Click "Edit"
-5. Add the OpenShift statements to the existing policy
-6. Save changes
-
-**Option 2: AWS CLI**
-```bash
-# 1. Get current policy
-aws kms get-key-policy \
-  --key-id <KEY_ID> \
-  --policy-name default \
-  --region <REGION> \
-  --output json > kms-policy.json
-
-# 2. Edit kms-policy.json to add OpenShift statements
-
-# 3. Apply updated policy
-aws kms put-key-policy \
-  --key-id <KEY_ID> \
-  --policy-name default \
-  --policy file://kms-policy.json \
-  --region <REGION>
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Terraform/Installer launches EC2 instance with IAM profile  │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. EC2 service assumes the IAM role on behalf of the instance  │
+└─────────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. Instance uses role credentials to call KMS for EBS encrypt  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-#### Verification
+**Reference**: [IAM Roles for EC2](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html)
 
-After updating the KMS policy, verify it includes the OpenShift roles:
+#### Verification Commands
+
+**Verify KMS key is enabled:**
 
 ```bash
+aws kms describe-key --key-id alias/your-kms-alias --region <REGION> \
+  --query 'KeyMetadata.[KeyId,KeyState,Enabled]' --output table
+```
+
+**Verify KMS policy after Terraform applies it:**
+
+```bash
+KMS_KEY_ID=$(aws kms describe-key --key-id alias/your-kms-alias --region <REGION> \
+  --query 'KeyMetadata.KeyId' --output text)
+
 aws kms get-key-policy \
-  --key-id <KEY_ID> \
+  --key-id $KMS_KEY_ID \
   --policy-name default \
   --region <REGION> \
-  --output json | jq -r '.Policy' | jq '.Statement'
+  --query Policy --output text | jq '.'
 ```
 
-Look for statements with Principal ARNs matching your OpenShift IAM roles.
+**Verify principals are ARNs (not Role IDs):**
 
-#### Timing Considerations
-
-**⚠️ CRITICAL**: The KMS policy must be updated **BEFORE** running `terraform apply`.
-
-**Correct sequence:**
-1. ✅ Customer creates/provides KMS key
-2. ✅ Customer updates KMS key policy with OpenShift role ARNs
-3. ✅ Run Terraform to create cluster
-4. ✅ Worker/infra nodes provision successfully
-
-**Wrong sequence (will fail):**
-1. Customer provides KMS key (without policy update)
-2. ❌ Run Terraform
-3. ❌ Master nodes succeed (created by installer)
-4. ❌ Worker/infra nodes fail with KMS error
-5. Manual fix required
-
-#### Alternative: Use AWS-Managed Default Key
-
-If KMS policy updates are not possible, use the AWS-managed default EBS encryption key:
-
-```hcl
-# In demo.tfvars, comment out or change:
-# kms_ec2_alias = "alias/ec2-ebs"
-kms_ec2_alias = "alias/aws/ebs"  # AWS-managed key (no policy needed)
+```bash
+# This should return nothing. If it returns AROA... strings, the policy is wrong!
+aws kms get-key-policy --key-id $KMS_KEY_ID --policy-name default --region <REGION> \
+  --query Policy --output text | jq -r '.Statement[].Principal.AWS // empty' | grep "^AROA"
 ```
-
-**Note**: AWS-managed keys have default permissions and don't require policy updates, but offer less control over key management.
 
 #### Troubleshooting KMS Issues
 
 **Symptom**: Worker/infra nodes fail with `Client.InvalidKMSKey.InvalidState`
 
-**Check:**
+**Common Causes:**
+
+| Cause | How to Check | Fix |
+|-------|-------------|-----|
+| KMS key disabled | `aws kms describe-key` shows `KeyState: Disabled` | Enable the key |
+| Role IDs instead of ARNs | Policy has `AROA...` principals | Replace with full ARNs |
+| Missing roles in policy | Roles not in KMS policy | Update policy with role ARNs |
+| Bootstrap policy not applied | Root account not in policy | Apply bootstrap policy |
+
+**⚠️ CRITICAL: Role ARNs vs Role IDs**
+
+A common mistake is using IAM Role IDs instead of Role ARNs:
+
+| Format | Example | Works in KMS Policy? |
+|--------|---------|---------------------|
+| **Role ARN** ✅ | `arn:aws:iam::123456789012:role/ocp-worker-role` | **YES** |
+| **Role ID** ❌ | `AROAQYEI4T77KO24TTW65` | **NO** |
+
+**Recovery procedure if machines fail:**
+
 ```bash
-# 1. Verify KMS key state
-aws kms describe-key --key-id alias/ec2-ebs --region <REGION>
-# KeyState should be "Enabled"
+# 1. Verify/fix KMS policy
+aws kms get-key-policy --key-id $KMS_KEY_ID --policy-name default --region <REGION> \
+  --query Policy --output text | jq '.'
 
-# 2. Verify KMS key policy includes OpenShift roles
-aws kms get-key-policy \
-  --key-id <KEY_ID> \
-  --policy-name default \
-  --region <REGION> \
-  --output json | jq -r '.Policy' | jq '.'
-
-# 3. Check if IAM roles exist
-aws iam get-role --role-name <CONTROL_PLANE_ROLE>
-aws iam get-role --role-name <WORKER_ROLE>
-```
-
-**Fix**: Update KMS policy as documented above, then delete failed machines:
-```bash
+# 2. Delete failed machines (MachineSet will recreate them)
 oc delete machine -n openshift-machine-api -l machine.openshift.io/cluster-api-machine-role=worker
 oc delete machine -n openshift-machine-api -l machine.openshift.io/cluster-api-machine-role=infra
 ```
 
-New machines will be created automatically with proper KMS access.
+#### Alternative: Use AWS-Managed Default Key
+
+If KMS policy management is not possible, use the AWS-managed default EBS encryption key:
+
+```hcl
+# In demo.tfvars:
+kms_ec2_alias = "alias/aws/ebs"  # AWS-managed key (no policy needed)
+kms_additional_role_arns = []    # No additional roles needed
+```
+
+**Note**: AWS-managed keys have default permissions and don't require policy updates, but offer less control over key management.
 
 ---
 
@@ -2143,7 +2254,11 @@ For issues or questions:
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: January 21, 2026  
+**Document Version**: 1.2  
+**Last Updated**: January 25, 2026  
 **Author**: Technical Documentation Team  
 **Status**: Production Ready
+
+**Changelog**:
+- v1.2 (2026-01-25): Completely rewrote KMS documentation to document the automated two-phase approach: Bootstrap policy (manual) + Terraform auto-update. Added explanation of IAM roles for EC2 instances and how they use KMS.
+- v1.1 (2026-01-25): Added critical warning about using Role ARNs vs Role IDs in KMS policies. Enhanced KMS troubleshooting section with step-by-step diagnosis commands.

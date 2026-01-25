@@ -5,7 +5,8 @@ resource "null_resource" "openshift_prepare" {
     aws_iam_role_policy_attachment.ocpcontrolplane-attach,
     aws_iam_role_policy_attachment.ocpworkernode-attach,
     aws_iam_instance_profile.ocpcontrolplane,
-    aws_iam_instance_profile.ocpworkernode
+    aws_iam_instance_profile.ocpworkernode,
+    null_resource.kms_key_policy
   ]
   provisioner "local-exec" {
     interpreter = ["bash","-c"]

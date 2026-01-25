@@ -201,3 +201,112 @@ data "aws_iam_policy_document" "allow_access_from_another_account" {
     ]
   }
 }
+
+########################################################
+##############   KMS KEY POLICY FOR EBS   ##############
+########################################################
+
+# This resource automatically updates the KMS key policy after IAM roles are created
+# to grant OpenShift roles permission to use the KMS key for EBS encryption
+# Uses null_resource with AWS CLI for compatibility with older AWS provider versions
+
+locals {
+  # Combine Terraform-managed roles with any additional roles (e.g., CSI driver)
+  kms_role_arns = concat(
+    [
+      aws_iam_role.ocpcontrolplane.arn,
+      aws_iam_role.ocpworkernode.arn
+    ],
+    var.kms_additional_role_arns
+  )
+  
+  # Build the KMS policy JSON
+  kms_policy = jsonencode({
+    Version = "2012-10-17"
+    Id      = "openshift-ebs-encryption-policy"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow OpenShift roles to use the key"
+        Effect = "Allow"
+        Principal = {
+          AWS = local.kms_role_arns
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow OpenShift roles to manage grants"
+        Effect = "Allow"
+        Principal = {
+          AWS = local.kms_role_arns
+        }
+        Action = [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant"
+        ]
+        Resource = "*"
+        Condition = {
+          Bool = {
+            "kms:GrantIsForAWSResource" = "true"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "null_resource" "kms_key_policy" {
+  # Trigger update when roles change
+  triggers = {
+    controlplane_role_arn = aws_iam_role.ocpcontrolplane.arn
+    worker_role_arn       = aws_iam_role.ocpworkernode.arn
+    additional_roles      = join(",", var.kms_additional_role_arns)
+    kms_key_id            = data.aws_kms_alias.ec2_cmk_arn.target_key_id
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      echo "Updating KMS key policy for OpenShift EBS encryption..."
+      
+      # Write policy to temp file
+      cat > /tmp/kms-policy-$$.json << 'POLICY'
+      ${local.kms_policy}
+      POLICY
+      
+      # Apply the policy
+      aws kms put-key-policy \
+        --key-id ${data.aws_kms_alias.ec2_cmk_arn.target_key_id} \
+        --policy-name default \
+        --policy file:///tmp/kms-policy-$$.json \
+        --region ${var.region}
+      
+      # Cleanup
+      rm -f /tmp/kms-policy-$$.json
+      
+      echo "KMS key policy updated successfully."
+    EOT
+  }
+
+  # Ensure roles are created before updating KMS policy
+  depends_on = [
+    aws_iam_role.ocpcontrolplane,
+    aws_iam_role.ocpworkernode
+  ]
+}

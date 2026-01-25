@@ -71,7 +71,30 @@ tags = {
 # }
 
 
-kms_ec2_alias = "alias/ec2-ebs"
+# ==============================================================================
+# KMS Configuration for EBS Encryption
+# ==============================================================================
+# The KMS key alias used for encrypting EBS volumes (control plane, workers, infra)
+# This key must exist before running terraform apply
+kms_ec2_alias = "alias/your-kms-key-alias"
+
+# Additional IAM role ARNs to include in KMS key policy for EBS encryption
+# These roles will be granted permission to use the KMS key for encryption/decryption
+#
+# The CSI driver role is created by ccoctl and follows this naming pattern:
+#   arn:aws:iam::<ACCOUNT_ID>:role/<CLUSTER_NAME>-openshift-cluster-csi-drivers-ebs-cloud-credentia
+#
+# Example:
+#   kms_additional_role_arns = [
+#     "arn:aws:iam::123456789012:role/my-cluster-openshift-cluster-csi-drivers-ebs-cloud-credentia"
+#   ]
+#
+# To find your CSI driver role after ccoctl runs:
+#   aws iam list-roles --query "Roles[?contains(RoleName, 'ebs-cloud-credenti')].Arn" --output text
+#
+kms_additional_role_arns = [
+  "arn:aws:iam::XXXXXXXXXXXX:role/CLUSTER_NAME-openshift-cluster-csi-drivers-ebs-cloud-credentia"
+]
 
 #The Infra ID tagged on the subnets for the cluster
 infra_random_id         = "demo-d44a5"
