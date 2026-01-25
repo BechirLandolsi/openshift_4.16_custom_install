@@ -28,6 +28,23 @@ proxy_config                  = {
     noProxy    = "127.0.0.1,localhost,169.254.169.254,10.36.0.0,172.20.0.0,172.21.0.0,172.30.0.0,XXXXX.fr,ec2.eu-west-1.amazonaws.com,elasticloadbalancing.eu-west-1.amazonaws.com,s3.eu-west-1.amazonaws.com,.XXXXXXnetwork.com"
 }
 
+# ==============================================================================
+# User-Defined Tags
+# ==============================================================================
+# These tags will be applied by OpenShift to ALL resources it creates:
+# - EC2 instances (control plane, worker, infra nodes)
+# - EBS volumes
+# - Load balancers (NLB/ELB)
+# - Security groups
+# - Network interfaces
+# - Any other AWS resources provisioned by OpenShift
+#
+# NOTE: These tags are NOT applied to pre-existing resources (VPC, subnets, etc.)
+#       They only apply to resources created during cluster installation.
+#
+# Replace the example tags below with your organization's required tags.
+# ==============================================================================
+
 tags = {
     "tag1": "Value1",
     "tag2": "Value2",
@@ -38,6 +55,20 @@ tags = {
     "tag7": "Value7",
     "tag8": "Value8"
 }
+
+# Example of real organizational tags (uncomment and modify as needed):
+# tags = {
+#     "Environment": "Production",
+#     "Project": "OpenShift-Platform",
+#     "CostCenter": "IT-Infrastructure",
+#     "Owner": "platform-team@company.com",
+#     "ManagedBy": "Terraform",
+#     "Compliance": "ISO27001",
+#     "BackupPolicy": "Daily",
+#     "Department": "Engineering",
+#     "Application": "Container-Platform",
+#     "Criticality": "High"
+# }
 
 
 kms_ec2_alias = "alias/ec2-ebs"
