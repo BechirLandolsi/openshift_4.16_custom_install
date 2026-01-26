@@ -2341,16 +2341,3 @@ This guide provides a comprehensive approach to deploying OpenShift 4.16 on AWS 
 For issues or questions:
 - OpenShift Documentation: https://docs.openshift.com/
 - Red Hat Customer Portal: https://access.redhat.com/
-- OpenShift Commons: https://commons.openshift.org/
-
----
-
-**Document Version**: 1.3  
-**Last Updated**: January 26, 2026  
-**Author**: Technical Documentation Team  
-**Status**: Production Ready
-
-**Changelog**:
-- v1.3 (2026-01-26): Final delivery cleanup. Added verify-cluster.sh script. All configuration files anonymized with placeholders. Added create-kms-key.sh and kms-bootstrap-policy.json for pre-encrypted AMI workflow. Updated FILES_DELIVERED.txt with complete inventory.
-- v1.2 (2026-01-25): Completely rewrote KMS documentation to document the automated two-phase approach: Bootstrap policy (manual) + Terraform auto-update. Added explanation of IAM roles for EC2 instances and how they use KMS.
-- v1.1 (2026-01-25): Added critical warning about using Role ARNs vs Role IDs in KMS policies. Enhanced KMS troubleshooting section with step-by-step diagnosis commands.
