@@ -1,7 +1,7 @@
 # OpenShift 4.16 Installation on AWS - Complete Guide
 
 **Version:** 4.16.9  
-**Document Date:** January 26, 2026  
+**Document Date:** January 26, 2026 (Updated)  
 **Target Environment:** AWS (Possibly Disconnected/Air-gapped)
 
 ---
@@ -17,6 +17,8 @@
 1. [Overview](#overview)
 2. [What's New in 4.16](#whats-new-in-416)
 3. [Prerequisites](#prerequisites)
+   - [Required Tools](#required-tools)
+   - [Bastion Host Setup](#bastion-host-setup)
    - [KMS Key Configuration for EBS Encryption](#kms-key-configuration-for-ebs-encryption)
 4. [Architecture Overview](#architecture-overview)
 5. [Part 1: Custom AMI Creation](#part-1-custom-ami-creation)
@@ -567,8 +569,139 @@ kms_additional_role_arns = []    # No additional roles needed
 | **Terraform** | 1.5.0+ | Infrastructure provisioning |
 | **AWS CLI** | 2.x | AWS resource management and AMI creation |
 | **oc client** | 4.16+ | OpenShift cluster operations |
+| **ccoctl** | 4.16+ | Create IAM roles for manual credentials mode |
 | **wget** or **curl** | Any | Download RHCOS VMDK files |
 | **jq** | 1.6+ | JSON parsing in scripts |
+
+### Bastion Host Setup
+
+Install the required tools on your bastion host before starting the installation.
+
+#### 1. AWS CLI v2
+
+```bash
+# Download and install AWS CLI v2
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Verify installation
+aws --version
+# Expected: aws-cli/2.x.x ...
+
+# Configure credentials
+aws configure
+```
+
+#### 2. OpenShift CLI (oc)
+
+```bash
+# Download oc client for OpenShift 4.16
+wget https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.16.9/openshift-client-linux.tar.gz
+
+# Extract and install
+tar -xzf openshift-client-linux.tar.gz
+sudo mv oc kubectl /usr/local/bin/
+
+# Verify installation
+oc version --client
+# Expected: Client Version: 4.16.9
+```
+
+#### 3. ccoctl (Cloud Credential Operator CLI)
+
+```bash
+# Download ccoctl for OpenShift 4.16
+wget https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.16.9/ccoctl-linux.tar.gz
+
+# Extract and install
+tar -xzf ccoctl-linux.tar.gz
+sudo mv ccoctl /usr/local/bin/
+
+# Verify installation
+ccoctl --help
+```
+
+#### 4. Terraform
+
+```bash
+# Add HashiCorp repository (RHEL/Amazon Linux)
+sudo yum install -y yum-utils
+sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+sudo yum install -y terraform
+
+# Or download binary directly
+wget https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+unzip terraform_1.5.7_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+
+# Verify installation
+terraform version
+```
+
+#### 5. jq (JSON processor)
+
+```bash
+# RHEL/Amazon Linux
+sudo yum install -y jq
+
+# Or download binary
+wget https://github.com/jqlang/jq/releases/download/jq-1.7/jq-linux-amd64
+sudo mv jq-linux-amd64 /usr/local/bin/jq
+sudo chmod +x /usr/local/bin/jq
+
+# Verify installation
+jq --version
+```
+
+#### 6. Go 1.22.x (for building custom installer)
+
+```bash
+# Download Go 1.22
+wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+
+# Remove old Go and install new
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+
+# Add to PATH (add to ~/.bashrc)
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify installation
+go version
+# Expected: go version go1.22.5 linux/amd64
+```
+
+#### Quick Verification Script
+
+Run this script to verify all tools are installed:
+
+```bash
+#!/bin/bash
+echo "=== Bastion Host Tools Verification ==="
+
+check_tool() {
+    if command -v $1 &> /dev/null; then
+        echo "✓ $1: $($1 --version 2>&1 | head -1)"
+    else
+        echo "✗ $1: NOT INSTALLED"
+    fi
+}
+
+check_tool aws
+check_tool oc
+check_tool ccoctl
+check_tool terraform
+check_tool jq
+check_tool go
+check_tool git
+check_tool wget
+
+echo ""
+echo "=== AWS Configuration ==="
+aws sts get-caller-identity 2>/dev/null && echo "✓ AWS credentials configured" || echo "✗ AWS credentials NOT configured"
+```
 
 ### AWS Permissions Required
 
