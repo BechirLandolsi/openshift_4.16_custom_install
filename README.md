@@ -1,7 +1,7 @@
 # OpenShift 4.16 Installation on AWS - Complete Guide
 
 **Version:** 4.16.9  
-**Document Date:** January 21, 2026  
+**Document Date:** January 26, 2026  
 **Target Environment:** AWS (Possibly Disconnected/Air-gapped)
 
 ---
@@ -1744,6 +1744,36 @@ aws ec2 describe-volumes \
 # All volumes should show Encrypted=true with your KMS key ARN
 ```
 
+### Step 4.11: Run Full Cluster Verification (Recommended)
+
+A comprehensive verification script is provided to check all aspects of the cluster:
+
+```bash
+# Run the verification script
+cd terraform-openshift-v18/
+./verify-cluster.sh
+```
+
+The script checks:
+
+| Check | What it verifies |
+|-------|-----------------|
+| **Nodes** | All nodes Ready and healthy |
+| **Operators** | All cluster operators available, not degraded |
+| **Cluster Tags** | EC2 instances have correct `kubernetes.io/cluster/` tag |
+| **KMS Encryption** | All EBS volumes encrypted with correct CMK |
+| **AMI Encryption** | AMI and snapshot encrypted with correct CMK |
+| **KMS Policy** | Authorized IAM roles in KMS key policy |
+
+**Expected output:**
+
+```
+✓ All nodes are Ready
+✓ All cluster operators are healthy
+✓ All volumes are encrypted with the correct CMK
+✓ AMI is encrypted with the correct CMK
+```
+
 ---
 
 ## Part 5: Disconnected Installation
@@ -2309,11 +2339,12 @@ For issues or questions:
 
 ---
 
-**Document Version**: 1.2  
-**Last Updated**: January 25, 2026  
+**Document Version**: 1.3  
+**Last Updated**: January 26, 2026  
 **Author**: Technical Documentation Team  
 **Status**: Production Ready
 
 **Changelog**:
+- v1.3 (2026-01-26): Final delivery cleanup. Added verify-cluster.sh script. All configuration files anonymized with placeholders. Added create-kms-key.sh and kms-bootstrap-policy.json for pre-encrypted AMI workflow. Updated FILES_DELIVERED.txt with complete inventory.
 - v1.2 (2026-01-25): Completely rewrote KMS documentation to document the automated two-phase approach: Bootstrap policy (manual) + Terraform auto-update. Added explanation of IAM roles for EC2 instances and how they use KMS.
 - v1.1 (2026-01-25): Added critical warning about using Role ARNs vs Role IDs in KMS policies. Enhanced KMS troubleshooting section with step-by-step diagnosis commands.

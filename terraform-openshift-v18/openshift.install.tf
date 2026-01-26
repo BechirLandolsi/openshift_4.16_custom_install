@@ -101,7 +101,7 @@ data "aws_lb" "ingress" {
   arn = data.external.get_ingress_lb.result.LoadBalancerArn 
 }
 
-### DNS ROUTE ELB TO ADD TO HOSTED ZONE
+### DNS ROUTE ELB TO ADD TO PUBLIC HOSTED ZONE (for external access)
 resource "aws_route53_record" "ingress_dns_route" {
   zone_id = var.hosted_zone
   name    = join(".", ["*.apps", var.cluster_name, var.domain])
@@ -112,5 +112,25 @@ resource "aws_route53_record" "ingress_dns_route" {
     zone_id = "${data.aws_lb.ingress.zone_id}"
     evaluate_target_health = true
   }
+}
+
+### DNS ROUTE ELB TO ADD TO PRIVATE HOSTED ZONE (for internal cluster DNS resolution)
+# The OpenShift installer creates a private hosted zone for internal DNS
+# We need to add the *.apps record there so pods can resolve it
+data "aws_route53_zone" "private" {
+  name         = "${var.cluster_name}.${var.domain}."
+  private_zone = true
+
+  depends_on = [null_resource.openshift_install]
+}
+
+resource "aws_route53_record" "ingress_dns_route_private" {
+  zone_id = data.aws_route53_zone.private.zone_id
+  name    = join(".", ["*.apps", var.cluster_name, var.domain])
+  type    = "CNAME"
+  ttl     = 300
+  records = [data.aws_lb.ingress.dns_name]
+
+  depends_on = [data.aws_route53_zone.private]
 }
 

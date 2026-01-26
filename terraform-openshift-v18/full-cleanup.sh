@@ -133,8 +133,32 @@ if [[ "$AWS_DESTROY" == "true" ]]; then
     fi
     echo
     
-    # Step 1b: Destroy Cluster
-    echo -e "${CYAN}Step 1b: Destroying OpenShift cluster...${NC}"
+    # Step 1b: Delete old OIDC roles (to avoid trust policy mismatch on reinstall)
+    echo -e "${CYAN}Step 1b: Deleting old OIDC roles...${NC}"
+    if [[ -n "$CLUSTER_NAME" ]]; then
+        for role in $(aws iam list-roles --query "Roles[?contains(RoleName,'${CLUSTER_NAME}-openshift')].RoleName" --output text 2>/dev/null); do
+            echo -e "  Deleting role: $role"
+            # Delete inline policies first
+            for policy in $(aws iam list-role-policies --role-name "$role" --query 'PolicyNames' --output text 2>/dev/null); do
+                aws iam delete-role-policy --role-name "$role" --policy-name "$policy" 2>/dev/null || true
+            done
+            # Delete attached policies
+            for policy_arn in $(aws iam list-attached-role-policies --role-name "$role" --query 'AttachedPolicies[*].PolicyArn' --output text 2>/dev/null); do
+                aws iam detach-role-policy --role-name "$role" --policy-arn "$policy_arn" 2>/dev/null || true
+            done
+            # Delete the role
+            aws iam delete-role --role-name "$role" 2>/dev/null && \
+                echo -e "${GREEN}  ✓ Deleted: $role${NC}" || \
+                echo -e "${YELLOW}  ⚠ Could not delete: $role${NC}"
+        done
+        echo -e "${GREEN}✓ OIDC roles cleanup complete${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ CLUSTER_NAME not set, skipping OIDC roles cleanup${NC}"
+    fi
+    echo
+
+    # Step 1c: Destroy Cluster
+    echo -e "${CYAN}Step 1c: Destroying OpenShift cluster...${NC}"
     if [[ -f "delete-cluster.sh" ]]; then
         echo -e "${CYAN}Running delete-cluster.sh...${NC}"
         chmod +x delete-cluster.sh
@@ -190,6 +214,10 @@ remove_item "openshift-install.log" "OpenShift installer log"
 remove_item ".openshift_install.log" "Hidden installer log"
 remove_item "terraform.log" "Terraform log"
 remove_item "*.log" "All log files"
+remove_item "kms-policy.json" "KMS policy file"
+remove_item "tfplan" "Terraform plan file"
+remove_item "dns-*.json" "DNS change batch files"
+remove_item "trust-policy*.json" "IAM trust policy files"
 echo
 
 # Step 6: Backup Files

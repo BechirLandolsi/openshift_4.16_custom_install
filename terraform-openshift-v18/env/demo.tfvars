@@ -1,181 +1,201 @@
-account_id              = "XXXXXXXXXXXX"
-region                  = "eu-west-3"
-vpc_id                  = "vpc-XXXXXXXXXXXXXXXXX"
-ccoe_boundary           = "arn:aws:iam::XXXXXXXXXXXX:policy/XXX-boundarie-iam-policy"
-release_image           = "quay.io/openshift-release-dev/ocp-release:4.16.9-x86_64"       #Change to: your-registry.company.com/ocp-release:4.16.9-x86_64 if you are in a disconnected environment
-openshift_ssh_key       = ""
-domain                      = "hp...fr"
-ami                         = "ami-XXXXXXXXXXXXXXXXX"
-service_network_cidr        = "XXX.XXX.0.0/16"
-machine_network_cidr        = ["XXX.XXX.XXX.0/23"]
-cluster_network_cidr        = "XXX.XXX.0.0/14"
+# ==============================================================================
+# OpenShift 4.16 Terraform Configuration
+# ==============================================================================
+# INSTRUCTIONS: Copy this file and replace all placeholder values with your
+# actual AWS account and cluster configuration.
+#
+# Placeholders to replace:
+#   - XXXXXXXXXXXX     -> Your 12-digit AWS Account ID
+#   - vpc-XXXXXXXXX    -> Your VPC ID
+#   - subnet-XXXXXXXXX -> Your Subnet IDs
+#   - ami-XXXXXXXXX    -> Your AMI ID (pre-encrypted with KMS)
+#   - your-domain.com  -> Your DNS domain
+#   - ZXXXXXXXXXX      -> Your Route53 Hosted Zone ID
+# ==============================================================================
+
+# ==============================================================================
+# AWS Account & Region Configuration
+# ==============================================================================
+account_id = "XXXXXXXXXXXX"
+region     = "eu-west-3"
+vpc_id     = "vpc-XXXXXXXXXXXXXXXXX"
+
+# IAM Permission Boundary (optional - leave empty if not required)
+# Some organizations require permission boundaries for IAM role creation
+ccoe_boundary = ""
+# Example: ccoe_boundary = "arn:aws:iam::XXXXXXXXXXXX:policy/your-boundary-policy"
+
+# ==============================================================================
+# OpenShift Release Configuration
+# ==============================================================================
+# Release image - use default for connected environments
+# For disconnected: change to your-registry.company.com/ocp-release:4.16.9-x86_64
+release_image = "quay.io/openshift-release-dev/ocp-release:4.16.9-x86_64"
+
+# OpenShift installer download URL
+openshift_installer_url = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest"
+
+# Pull secret file path (download from console.redhat.com)
+openshift_pull_secret = "openshift/openshift_pull_secret.json"
+
+# ==============================================================================
+# Cluster Identity
+# ==============================================================================
+# Cluster name - used for resource naming and DNS
+cluster_name = "my-ocp-cluster"
+
+# Infra random ID - must match the tag on your subnets
+# Format: <prefix>-<random5chars> (e.g., "demo-a1b2c")
+# This creates the full InfraID: my-ocp-cluster-a1b2c
+infra_random_id = "demo-XXXXX"
+
+# S3 bucket name for OIDC provider
+s3_bucket_name_oidc = "my-cluster-oidc-bucket"
+
+# ==============================================================================
+# DNS Configuration
+# ==============================================================================
+# Base domain for the cluster (e.g., example.com)
+# Cluster will be accessible at: api.my-ocp-cluster.example.com
+domain = "your-domain.com"
+
+# Route53 Hosted Zone ID for the domain
+hosted_zone = "ZXXXXXXXXXXXXXXXXX"
+
+# ==============================================================================
+# Network Configuration
+# ==============================================================================
+# Private subnets (one per AZ, minimum 3 for HA)
+aws_private_subnets = [
+  "subnet-XXXXXXXXXXXXXXXXX",
+  "subnet-XXXXXXXXXXXXXXXXX",
+  "subnet-XXXXXXXXXXXXXXXXX"
+]
+
+# Public subnets (optional - for public-facing load balancers)
+aws_public_subnets = [
+  "subnet-XXXXXXXXXXXXXXXXX",
+  "subnet-XXXXXXXXXXXXXXXXX",
+  "subnet-XXXXXXXXXXXXXXXXX"
+]
+
+# Availability zones
+aws_worker_availability_zones = ["eu-west-3a", "eu-west-3b", "eu-west-3c"]
+
+# Network CIDRs
+service_network_cidr        = "172.30.0.0/16"
+cluster_network_cidr        = "10.128.0.0/14"
 cluster_network_host_prefix = "23"
+machine_network_cidr        = ["10.0.0.0/16"]
 
-aws_worker_iam_id             = "ami-XXXXXXXXXXXXXXXXX"
-hosted_zone                   = "XXXXXXXXXXXXXXXXXXXXXX"
+# Default route (optional - for egress)
+route_default = ""
 
-
-aws_worker_availability_zones = ["eu-west-3a","eu-west-3b","eu-west-3c"]
-openshift_pull_secret         = "openshift/openshift_pull_secret.json"
-openshift_installer_url       = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest"
-aws_private_subnets           = ["subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX"]
-aws_public_subnets            = ["subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX","subnet-XXXXXXXXXXXXXXXXX"]
-route_default                 = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX-XXXXXXXXXXXXXXXXX.elb.eu-west-1.amazonaws.com"
-proxy_config                  = {
-    enabled    = false
-    httpProxy  = "http://proxy...fr:8080"
-    httpsProxy = "http://proxy...fr:8080"
-    noProxy    = "127.0.0.1,localhost,169.254.169.254,10.36.0.0,172.20.0.0,172.21.0.0,172.30.0.0,XXXXX.fr,ec2.eu-west-1.amazonaws.com,elasticloadbalancing.eu-west-1.amazonaws.com,s3.eu-west-1.amazonaws.com,.XXXXXXnetwork.com"
+# ==============================================================================
+# Proxy Configuration (for disconnected environments)
+# ==============================================================================
+proxy_config = {
+  enabled    = false
+  httpProxy  = ""
+  httpsProxy = ""
+  noProxy    = ""
 }
-
-# ==============================================================================
-# User-Defined Tags
-# ==============================================================================
-# These tags will be applied by OpenShift to ALL resources it creates:
-# - EC2 instances (control plane, worker, infra nodes)
-# - EBS volumes
-# - Load balancers (NLB/ELB)
-# - Security groups
-# - Network interfaces
-# - Any other AWS resources provisioned by OpenShift
-#
-# NOTE: These tags are NOT applied to pre-existing resources (VPC, subnets, etc.)
-#       They only apply to resources created during cluster installation.
-#
-# Replace the example tags below with your organization's required tags.
-# ==============================================================================
-
-tags = {
-    "tag1": "Value1",
-    "tag2": "Value2",
-    "tag3": "Value3",
-    "tag4": "Value4",
-    "tag5": "Value5",
-    "tag6": "Value6",
-    "tag7": "Value7",
-    "tag8": "Value8"
-}
-
-# Example of real organizational tags (uncomment and modify as needed):
-# tags = {
-#     "Environment": "Production",
-#     "Project": "OpenShift-Platform",
-#     "CostCenter": "IT-Infrastructure",
-#     "Owner": "platform-team@company.com",
-#     "ManagedBy": "Terraform",
-#     "Compliance": "ISO27001",
-#     "BackupPolicy": "Daily",
-#     "Department": "Engineering",
-#     "Application": "Container-Platform",
-#     "Criticality": "High"
+# Example for disconnected:
+# proxy_config = {
+#   enabled    = true
+#   httpProxy  = "http://proxy.company.com:8080"
+#   httpsProxy = "http://proxy.company.com:8080"
+#   noProxy    = "127.0.0.1,localhost,169.254.169.254,.company.com,.svc,.cluster.local"
 # }
 
+# ==============================================================================
+# Custom AMI Configuration
+# ==============================================================================
+# IMPORTANT: AMI must be pre-encrypted with your KMS key!
+# Use the scripts in custom-ami-build/ to create an encrypted AMI
+ami               = "ami-XXXXXXXXXXXXXXXXX"
+aws_worker_iam_id = "ami-XXXXXXXXXXXXXXXXX"
+
+# SSH public key for cluster access (leave empty to auto-generate)
+openshift_ssh_key = ""
 
 # ==============================================================================
 # KMS Configuration for EBS Encryption
 # ==============================================================================
-# The KMS key alias used for encrypting EBS volumes (control plane, workers, infra)
-# This key must exist before running terraform apply
-kms_ec2_alias = "alias/your-kms-key-alias"
+# KMS key alias for EBS encryption (must exist before terraform apply)
+# Create using: custom-ami-build/create-kms-key.sh
+kms_ec2_alias = "alias/openshift-ebs-encryption"
 
-# Additional IAM role ARNs to include in KMS key policy for EBS encryption
-# These roles will be granted permission to use the KMS key for encryption/decryption
-#
-# REQUIRED ROLES (created by ccoctl, must be added here):
-#
-# 1. Machine API role - Creates EC2 instances with encrypted EBS volumes
-#    Pattern: <CLUSTER_NAME>-openshift-machine-api-aws-cloud-credentials
-#
-# 2. CSI EBS driver role - Creates encrypted persistent volumes
-#    Pattern: <CLUSTER_NAME>-openshift-cluster-csi-drivers-ebs-cloud-credentia
-#
-# To find these roles after ccoctl runs:
-#   aws iam list-roles --query "Roles[?contains(RoleName, 'machine-api') || contains(RoleName, 'ebs-cloud')].Arn" --output text
-#
-# Example:
-#   kms_additional_role_arns = [
-#     "arn:aws:iam::123456789012:role/my-cluster-openshift-machine-api-aws-cloud-credentials",
-#     "arn:aws:iam::123456789012:role/my-cluster-openshift-cluster-csi-drivers-ebs-cloud-credentia"
-#   ]
-#
+# Additional IAM role ARNs to include in KMS key policy
+# These are created by ccoctl during installation
+# Pattern: <CLUSTER_NAME>-openshift-<operator>-<credentials>
 kms_additional_role_arns = [
   "arn:aws:iam::XXXXXXXXXXXX:role/CLUSTER_NAME-openshift-machine-api-aws-cloud-credentials",
   "arn:aws:iam::XXXXXXXXXXXX:role/CLUSTER_NAME-openshift-cluster-csi-drivers-ebs-cloud-credentia"
 ]
 
-#The Infra ID tagged on the subnets for the cluster
-infra_random_id         = "demo-d44a5"
-#Customized values OpenShift cluster "bkprestore"
-s3_bucket_name_oidc     = "my-cluster-bkprestore"
-cluster_name            = "my-ocp-cluster"
-control_plane_role_name = "ocpcontrolplane-iam-role"
-aws_iam_role_compute_node = "ocpcontrolplane-iam-role"
-ocpcontrolplane_policy = "ocpcontrolplane-policy-iam-policy"
-aws_worker_iam_role           = "ocpworkernode-iam-role"
-ocpworkernode_policy = "ocpworkernode-policy-iam-policy"
+# ==============================================================================
+# IAM Role Configuration
+# ==============================================================================
+# Names for Terraform-created IAM roles and policies
+control_plane_role_name   = "ocp-controlplane-role"
+aws_iam_role_compute_node = "ocp-controlplane-role"
+ocpcontrolplane_policy    = "ocp-controlplane-policy"
+aws_worker_iam_role       = "ocp-worker-role"
+ocpworkernode_policy      = "ocp-worker-policy"
 
 # ==============================================================================
-# Node Sizing & Capacity (Adjust based on workload requirements)
+# User-Defined Tags
 # ==============================================================================
+# Tags applied to ALL resources created by OpenShift
+# Replace with your organization's required tags
+tags = {
+  "Environment" = "Production"
+  "Project"     = "OpenShift-Platform"
+  "CostCenter"  = "IT-Infrastructure"
+  "Owner"       = "platform-team@company.com"
+  "ManagedBy"   = "Terraform"
+  "Compliance"  = "Required"
+}
 
-# ------------------------------------------------------------------------------
-# Worker Nodes (Application workloads)
-# ------------------------------------------------------------------------------
-# Total number of worker nodes across all AZs
-# Minimum: 2 (for HA), Recommended: 3+
-worker_count = 3
-
-# EC2 instance type for worker nodes
-# Options: m5.xlarge, m5.2xlarge, c5.2xlarge, c5.4xlarge, etc.
-# Choose based on CPU/Memory requirements
-aws_worker_instance_type = "m5.2xlarge"
-
-# Root volume type for worker nodes
-# Options: gp3 (general purpose), io1/io2 (high performance)
-aws_worker_root_volume_type = "gp3"
-
-# Root volume size in GB
-# Minimum: 120GB, Recommended: 200-300GB
-aws_worker_root_volume_size = "200"
-
-# IOPS for io1/io2 volumes (ignored for gp3)
-# Only needed if using io1 or io2
-aws_worker_root_volume_iops = "3000"
-
-# ------------------------------------------------------------------------------
-# Infrastructure Nodes (OpenShift internal services - Optional, for Day 2)
-# ------------------------------------------------------------------------------
-# Number of infra nodes per availability zone
-# Infra nodes run: ingress router, monitoring, logging, registry
-# Set to "0" to skip infra nodes and run on workers
-# Set to "1" for dedicated infra nodes (recommended for production)
-aws_infra_count_per_availability_zone = "1"
-
-# EC2 instance type for infra nodes
-aws_infra_instance_type = "m5.xlarge"
-
-# Infra node storage configuration
-aws_infra_root_volume_type = "gp3"
-aws_infra_root_volume_size = "200"
-aws_infra_root_volume_iops = "3000"
-
-# ------------------------------------------------------------------------------
-# Control Plane / Master Nodes (Always 3 for HA)
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# Control Plane Nodes (Masters)
+# ==============================================================================
 # Number of control plane nodes (DO NOT CHANGE - must be 3 for HA)
 master_count = 3
 
-# EC2 instance type for control plane
-# Minimum: m5.xlarge, Recommended: m5.2xlarge or larger
+# Instance type for control plane
 aws_master_instance_type = "m5.2xlarge"
 
-# Control plane storage configuration
-# Needs good IOPS for etcd database
+# Storage configuration
 aws_master_volume_type = "gp3"
 aws_master_volume_size = "200"
-
-# IOPS for master volumes (important for etcd performance)
-# gp3: 3000-16000, io1: up to 64000
 aws_master_volume_iops = "4000"
 
+# ==============================================================================
+# Worker Nodes
+# ==============================================================================
+# Number of worker nodes
+worker_count = 3
 
+# Instance type for workers
+aws_worker_instance_type = "m5.2xlarge"
+
+# Storage configuration
+aws_worker_root_volume_type = "gp3"
+aws_worker_root_volume_size = "200"
+aws_worker_root_volume_iops = "3000"
+
+# ==============================================================================
+# Infrastructure Nodes (Optional)
+# ==============================================================================
+# Number of infra nodes per AZ (0 = disable, 1 = recommended for production)
+aws_infra_count_per_availability_zone = "1"
+
+# Instance type for infra nodes
+aws_infra_instance_type = "m5.xlarge"
+
+# Storage configuration
+aws_infra_root_volume_type = "gp3"
+aws_infra_root_volume_size = "200"
+aws_infra_root_volume_iops = "3000"
