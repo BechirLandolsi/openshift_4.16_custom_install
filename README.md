@@ -6,6 +6,12 @@
 
 ---
 
+## Architecture
+
+![OpenShift AWS Architecture](OCP_AWS_Architecture.png)
+
+---
+
 ## Table of Contents
 
 1. [Overview](#overview)

@@ -27,6 +27,13 @@ SCRIPTS.md
     - Environment variables
     - Common workflows (install, reinstall, troubleshoot)
 
+OCP_AWS_Architecture.png
+    Architecture diagram showing:
+    - OpenShift cluster components on AWS
+    - Network topology (VPC, subnets, load balancers)
+    - IAM roles and OIDC provider
+    - KMS encryption for EBS volumes
+
 .gitattributes
     Git configuration for line ending handling:
     - Forces Unix (LF) line endings for .sh, .tf, .yaml, .md files
@@ -315,8 +322,9 @@ Shell Scripts:             14 files
 Source Code (Go):           4 files
 Git/Editor Config:          4 files
 Customer Tags Simulation:   7 files
+Images:                     1 file
                           ---
-TOTAL:                     54 files
+TOTAL:                     55 files
 
 ================================================================================
 QUICK START WORKFLOW
