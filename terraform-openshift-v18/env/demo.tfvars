@@ -129,6 +129,21 @@ kms_ec2_alias = "alias/openshift-ebs-encryption"
 # Additional IAM role ARNs to include in KMS key policy
 # These are created by ccoctl during installation
 # Pattern: <CLUSTER_NAME>-openshift-<operator>-<credentials>
+#
+# To find the role ARNs after ccoctl runs, use these commands:
+#
+#   # List all OpenShift-related roles for your cluster:
+#   aws iam list-roles --query "Roles[?contains(RoleName, 'CLUSTER_NAME-openshift')].Arn" --output table
+#
+#   # Find the Machine API role (required for EC2 instance creation):
+#   aws iam list-roles --query "Roles[?contains(RoleName, 'machine-api')].Arn" --output text
+#
+#   # Find the CSI driver role (required for EBS volume encryption):
+#   aws iam list-roles --query "Roles[?contains(RoleName, 'ebs-cloud-credentia')].Arn" --output text
+#
+#   # Find the Image Registry role (if using S3 backend with KMS):
+#   aws iam list-roles --query "Roles[?contains(RoleName, 'image-registry')].Arn" --output text
+#
 kms_additional_role_arns = [
   "arn:aws:iam::XXXXXXXXXXXX:role/CLUSTER_NAME-openshift-machine-api-aws-cloud-credentials",
   "arn:aws:iam::XXXXXXXXXXXX:role/CLUSTER_NAME-openshift-cluster-csi-drivers-ebs-cloud-credentia"
