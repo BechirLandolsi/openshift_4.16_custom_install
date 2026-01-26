@@ -32,7 +32,10 @@ source kms-key-result.env
 # Step 4: Source the AMI details
 source custom-ami-result.env
 
-# Step 5: Update Terraform tfvars with AMI ID and KMS alias
+# Step 5: Verify AMI encryption (recommended)
+./verify-ami-encryption.sh
+
+# Step 6: Update Terraform tfvars with AMI ID and KMS alias
 echo "ami = \"$CUSTOM_AMI\""
 echo "kms_ec2_alias = \"$KMS_KEY_ALIAS\""
 ```
@@ -43,6 +46,7 @@ echo "kms_ec2_alias = \"$KMS_KEY_ALIAS\""
 |------|-------------|
 | `create-kms-key.sh` | Creates KMS key with bootstrap policy |
 | `create-custom-ami.sh` | Creates RHCOS AMI encrypted with your KMS key |
+| `verify-ami-encryption.sh` | Verifies AMI encryption status and KMS key configuration |
 | `kms-bootstrap-policy.json` | Template for initial KMS key policy |
 | `kms-key-result.env` | Generated - KMS key details (after running create-kms-key.sh) |
 | `custom-ami-result.env` | Generated - AMI details (after running create-custom-ami.sh) |
@@ -646,6 +650,232 @@ aws ec2 describe-images \
 # Expected: Shows snapshot, encrypted, volume type
 ```
 
+## AMI Encryption Verification Script
+
+Use the `verify-ami-encryption.sh` script to verify that your custom AMI is properly encrypted with the expected customer-managed KMS key (CMK).
+
+### Script Features
+
+The verification script performs a complete check of your AMI:
+
+| Check | Description |
+|-------|-------------|
+| **AMI Status** | Verifies AMI exists and shows details (name, state, creation date) |
+| **Snapshot Verification** | Checks root volume snapshot encryption status |
+| **KMS Key Details** | Retrieves full KMS key information (ID, ARN, alias, type) |
+| **CMK Verification** | Confirms if the key is Customer Managed (not AWS managed) |
+| **Key Comparison** | Compares actual key with expected key (if provided) |
+| **AMI Tags** | Lists all tags applied to the AMI |
+
+### Usage
+
+#### Method 1: Auto-detect from Result Files (Recommended)
+
+If you ran `create-custom-ami.sh`, the script will automatically detect the AMI ID and KMS key from the generated result files:
+
+```bash
+cd Openshift_4.16/custom-ami-build/
+./verify-ami-encryption.sh
+```
+
+#### Method 2: Command Line Arguments
+
+```bash
+# Basic verification (AMI only)
+./verify-ami-encryption.sh -a ami-0123456789abcdef0
+
+# Full verification with expected KMS key comparison
+./verify-ami-encryption.sh -a ami-0123456789abcdef0 -k alias/openshift-ebs-encryption
+
+# Using full KMS ARN
+./verify-ami-encryption.sh --ami ami-0123456789abcdef0 --kms arn:aws:kms:eu-west-3:123456789012:key/xxx
+
+# Specify a different region
+./verify-ami-encryption.sh -a ami-0123456789abcdef0 -r us-east-1
+```
+
+#### Method 3: Environment Variables
+
+```bash
+export AMI_ID="ami-0123456789abcdef0"
+export EXPECTED_KMS_KEY="alias/openshift-ebs-encryption"
+export AWS_REGION="eu-west-3"
+./verify-ami-encryption.sh
+```
+
+### Arguments Reference
+
+| Argument | Short | Description | Required |
+|----------|-------|-------------|----------|
+| `--ami` | `-a` | AMI ID to verify (e.g., `ami-0123456789abcdef0`) | Yes* |
+| `--kms` | `-k` | Expected KMS key ARN or alias for comparison | No |
+| `--region` | `-r` | AWS region (default: `eu-west-3`) | No |
+| `--help` | `-h` | Show help message | No |
+
+\* Required unless `custom-ami-result.env` exists with `CUSTOM_AMI` variable.
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AMI_ID` | AMI ID to verify | Read from `custom-ami-result.env` |
+| `EXPECTED_KMS_KEY` | Expected KMS key ARN or alias | Read from `kms-key-result.env` |
+| `AWS_REGION` | AWS region | `eu-west-3` |
+
+### Expected Output - Successful Verification
+
+```
+======================================
+AMI Encryption Verification Tool
+======================================
+
+Configuration:
+  AMI ID:           ami-0123456789abcdef0
+  Region:           eu-west-3
+  Expected KMS Key: alias/openshift-ebs-encryption
+
+Step 1: Checking AMI status...
+✓ AMI found
+
+AMI Details:
+  Name:         rhcos-4.16.51-x86_64-ocp416-kms
+  State:        available
+  Created:      2026-01-25T10:30:00.000Z
+  Description:  RHCOS 4.16.51 for OpenShift 4.16 with KMS encryption
+
+Step 2: Checking root volume snapshot...
+✓ Snapshot found: snap-0123456789abcdef0
+
+Block Device Mapping:
+  Device:       /dev/xvda
+  Snapshot ID:  snap-0123456789abcdef0
+  Volume Size:  120 GB
+  Volume Type:  gp3
+
+Step 3: Verifying snapshot encryption...
+
+Snapshot Encryption Status:
+  Snapshot ID:  snap-0123456789abcdef0
+  State:        completed
+  Encrypted:    true
+  KMS Key ARN:  arn:aws:kms:eu-west-3:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  Status:       ✓ ENCRYPTED
+
+Step 4: Retrieving KMS key details...
+
+KMS Key Details:
+  Key ID:       xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  Key ARN:      arn:aws:kms:eu-west-3:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  Alias:        alias/openshift-ebs-encryption
+  Type:         Customer Managed (CMK)
+  State:        Enabled
+  Usage:        ENCRYPT_DECRYPT
+  Created:      2026-01-20T09:00:00.000Z
+  Description:  OpenShift 4.16 EBS Encryption Key
+  CMK Status:   ✓ Customer Managed Key
+
+Step 5: KMS key verification...
+
+KMS Key Comparison:
+  Expected Key: arn:aws:kms:eu-west-3:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  Actual Key:   arn:aws:kms:eu-west-3:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  Match:        ✓ KEYS MATCH
+
+Step 6: Checking AMI tags...
+
+AMI Tags:
+  Name: RHCOS 4.16.51 OpenShift 4.16 Custom
+  OS: RHCOS
+  OS-Version: 4.16.51
+  OCP-Version: 4.16
+  Encrypted: KMS
+  Compliance: Required
+
+======================================
+VERIFICATION SUCCESSFUL
+======================================
+
+Summary:
+  ✓ AMI exists and is available
+  ✓ Snapshot is encrypted
+  ✓ Using Customer Managed Key (CMK)
+  ✓ KMS key matches expected key
+
+AMI Ready for OpenShift Deployment:
+  AMI ID:     ami-0123456789abcdef0
+  Region:     eu-west-3
+  KMS Key:    arn:aws:kms:eu-west-3:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  KMS Alias:  alias/openshift-ebs-encryption
+
+Next steps for OpenShift deployment:
+  1. Use this AMI ID in your terraform.tfvars:
+     ami = "ami-0123456789abcdef0"
+
+  2. The AMI is pre-encrypted - no need to specify kmsKeyARN
+     in install-config.yaml
+```
+
+### Expected Output - Failed Verification
+
+If the AMI is not encrypted or uses the wrong KMS key:
+
+```
+======================================
+VERIFICATION FAILED
+======================================
+
+Issues detected:
+  ✗ Snapshot is not encrypted
+
+Please review the AMI configuration and ensure it was created
+with the correct KMS key using create-custom-ami.sh
+```
+
+Or if the KMS key doesn't match:
+
+```
+KMS Key Comparison:
+  Expected Key: arn:aws:kms:eu-west-3:123456789012:key/expected-key-id
+  Actual Key:   arn:aws:kms:eu-west-3:123456789012:key/different-key-id
+  Match:        ✗ KEYS DO NOT MATCH
+
+======================================
+VERIFICATION FAILED
+======================================
+
+Issues detected:
+  ✗ KMS key does not match expected key
+```
+
+### Exit Codes
+
+| Exit Code | Meaning |
+|-----------|---------|
+| `0` | Verification successful - AMI is properly encrypted with expected CMK |
+| `1` | Verification failed - AMI not found, not encrypted, or wrong KMS key |
+
+### Integration with CI/CD
+
+You can use the script in automated pipelines:
+
+```bash
+# In a CI/CD pipeline
+if ./verify-ami-encryption.sh -a "$AMI_ID" -k "$EXPECTED_KMS_KEY"; then
+    echo "AMI verification passed - proceeding with deployment"
+    # Continue with Terraform apply, etc.
+else
+    echo "AMI verification failed - aborting deployment"
+    exit 1
+fi
+```
+
+### Prerequisites
+
+The script requires:
+- AWS CLI installed and configured
+- `jq` installed (for JSON parsing)
+- IAM permissions: `ec2:DescribeImages`, `ec2:DescribeSnapshots`, `kms:DescribeKey`, `kms:ListAliases`
+
 ## Using the Custom AMI
 
 ### Update Terraform Variables
@@ -993,6 +1223,7 @@ aws ec2 describe-images --region "$AWS_REGION" --image-ids "$CUSTOM_AMI"
 |------|------|-------------|
 | `create-kms-key.sh` | Script | Creates KMS key with bootstrap policy for OpenShift |
 | `create-custom-ami.sh` | Script | Creates RHCOS AMI encrypted with your KMS key |
+| `verify-ami-encryption.sh` | Script | Verifies AMI encryption status and KMS key configuration |
 | `kms-bootstrap-policy.json` | Template | Initial KMS key policy (Terraform updates it later) |
 | `README.md` | Documentation | This file |
 | `kms-key-result.env` | Generated | KMS key details (after running create-kms-key.sh) |
@@ -1083,6 +1314,6 @@ For issues:
 
 ---
 
-**Document Version**: 2.0 (Updated to use Red Hat official VMDK process)  
-**Last Updated**: January 21, 2026  
+**Document Version**: 2.1 (Added AMI encryption verification script)  
+**Last Updated**: January 26, 2026  
 **Method**: Red Hat Official (VMDK Import with KMS)
