@@ -65,7 +65,7 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║           OpenShift Cluster Destroy                            ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo
-echo -e "${CYAN}Configuration:${NC}"
+echo -e "${CYAN}Configuration (from env/demo.tfvars):${NC}"
 echo "  Cluster Name:  $CLUSTER_NAME"
 echo "  Infra ID:      $INFRA_ID"
 echo "  Region:        $REGION"
@@ -73,8 +73,18 @@ echo "  Domain:        $DOMAIN"
 echo "  Hosted Zone:   $HOSTED_ZONE"
 echo "  Cluster Tag:   $CLUSTER_TAG"
 echo
+echo -e "${CYAN}Resources will be identified by:${NC}"
+echo "  • Tag: kubernetes.io/cluster/${INFRA_ID}=owned"
+echo "  • Names containing: ${CLUSTER_NAME}"
+echo "  • DNS records for: *.${CLUSTER_NAME}.${DOMAIN}"
+echo
+echo -e "${GREEN}SAFE: Only resources with '${CLUSTER_NAME}' in their name will be deleted${NC}"
+echo
 if [[ "$DRY_RUN" == "true" ]]; then
-    echo -e "${YELLOW}*** DRY RUN MODE - No resources will be deleted ***${NC}"
+    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  DRY RUN MODE - No resources will be deleted                   ║${NC}"
+    echo -e "${YELLOW}║  Review the output to verify only YOUR cluster resources       ║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo
 fi
 
@@ -148,28 +158,30 @@ else
 fi
 
 # ==============================================================================
-# PHASE 3: Delete Load Balancers
+# PHASE 3: Delete Load Balancers (filter by cluster name)
 # ==============================================================================
 echo
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}Phase 3: Delete Load Balancers${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# NLB/ALB (elbv2)
+# NLB/ALB (elbv2) - filter by cluster name
 LB_ARNS=$(aws elbv2 describe-load-balancers --region "$REGION" \
-    --query "LoadBalancers[?contains(LoadBalancerName, '${INFRA_ID}')].LoadBalancerArn" \
+    --query "LoadBalancers[?contains(LoadBalancerName, '${CLUSTER_NAME}')].LoadBalancerArn" \
     --output text 2>/dev/null || echo "")
 
 for lb_arn in $LB_ARNS; do
     if [[ -n "$lb_arn" ]] && [[ "$lb_arn" != "None" ]]; then
-        echo -e "${CYAN}Deleting NLB/ALB: $lb_arn${NC}"
+        LB_NAME=$(aws elbv2 describe-load-balancers --load-balancer-arns "$lb_arn" --region "$REGION" \
+            --query 'LoadBalancers[0].LoadBalancerName' --output text 2>/dev/null)
+        echo -e "${CYAN}Deleting NLB/ALB: $LB_NAME${NC}"
         run_cmd "aws elbv2 delete-load-balancer --load-balancer-arn '$lb_arn' --region $REGION"
     fi
 done
 
-# Classic ELB
+# Classic ELB - filter by cluster name
 CLASSIC_LBS=$(aws elb describe-load-balancers --region "$REGION" \
-    --query "LoadBalancerDescriptions[?contains(LoadBalancerName, '${INFRA_ID}')].LoadBalancerName" \
+    --query "LoadBalancerDescriptions[?contains(LoadBalancerName, '${CLUSTER_NAME}')].LoadBalancerName" \
     --output text 2>/dev/null || echo "")
 
 for lb in $CLASSIC_LBS; do
@@ -180,11 +192,11 @@ for lb in $CLASSIC_LBS; do
 done
 
 if [[ -z "$LB_ARNS" ]] && [[ -z "$CLASSIC_LBS" ]]; then
-    echo -e "${GREEN}✓ No load balancers found${NC}"
+    echo -e "${GREEN}✓ No load balancers found with '${CLUSTER_NAME}' in name${NC}"
 fi
 
 # ==============================================================================
-# PHASE 4: Delete Target Groups
+# PHASE 4: Delete Target Groups (filter by cluster name)
 # ==============================================================================
 echo
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
@@ -192,18 +204,20 @@ echo -e "${BLUE}Phase 4: Delete Target Groups${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
 TG_ARNS=$(aws elbv2 describe-target-groups --region "$REGION" \
-    --query "TargetGroups[?contains(TargetGroupName, '${INFRA_ID}')].TargetGroupArn" \
+    --query "TargetGroups[?contains(TargetGroupName, '${CLUSTER_NAME}')].TargetGroupArn" \
     --output text 2>/dev/null || echo "")
 
 for tg_arn in $TG_ARNS; do
     if [[ -n "$tg_arn" ]] && [[ "$tg_arn" != "None" ]]; then
-        echo -e "${CYAN}Deleting Target Group: $tg_arn${NC}"
+        TG_NAME=$(aws elbv2 describe-target-groups --target-group-arns "$tg_arn" --region "$REGION" \
+            --query 'TargetGroups[0].TargetGroupName' --output text 2>/dev/null)
+        echo -e "${CYAN}Deleting Target Group: $TG_NAME${NC}"
         run_cmd "aws elbv2 delete-target-group --target-group-arn '$tg_arn' --region $REGION"
     fi
 done
 
 if [[ -z "$TG_ARNS" ]]; then
-    echo -e "${GREEN}✓ No target groups found${NC}"
+    echo -e "${GREEN}✓ No target groups found with '${CLUSTER_NAME}' in name${NC}"
 fi
 
 # ==============================================================================
@@ -372,61 +386,49 @@ delete_iam_role() {
         echo -e "  ${YELLOW}⚠ Could not delete role${NC}"
 }
 
-# 1. Delete OIDC roles (created by ccoctl) - pattern: <cluster-name>-openshift-*
-echo -e "${CYAN}Looking for OIDC roles (${CLUSTER_NAME}-openshift-*)...${NC}"
-OIDC_ROLES=$(aws iam list-roles \
-    --query "Roles[?starts_with(RoleName, '${CLUSTER_NAME}-openshift')].RoleName" \
+# Delete ALL IAM roles that contain the cluster name
+# This is the safest and simplest approach
+echo -e "${CYAN}Looking for IAM roles containing '${CLUSTER_NAME}'...${NC}"
+
+ALL_CLUSTER_ROLES=$(aws iam list-roles \
+    --query "Roles[?contains(RoleName, '${CLUSTER_NAME}')].RoleName" \
     --output text 2>/dev/null || echo "")
 
-for role in $OIDC_ROLES; do
-    delete_iam_role "$role"
-done
-
-# 2. Delete roles matching cluster name pattern: <cluster-name>-*
-echo -e "${CYAN}Looking for cluster-prefixed roles (${CLUSTER_NAME}-*)...${NC}"
-CLUSTER_ROLES=$(aws iam list-roles \
-    --query "Roles[?starts_with(RoleName, '${CLUSTER_NAME}-')].RoleName" \
-    --output text 2>/dev/null || echo "")
-
-for role in $CLUSTER_ROLES; do
-    delete_iam_role "$role"
-done
-
-# 3. Delete Terraform-created roles by common patterns
-echo -e "${CYAN}Looking for Terraform-created roles...${NC}"
-for role_pattern in "ocp-controlplane" "ocp-worker" "ocpcontrolplane" "ocpworkernode"; do
-    ROLES=$(aws iam list-roles \
-        --query "Roles[?contains(RoleName, '${role_pattern}')].RoleName" \
-        --output text 2>/dev/null || echo "")
-    
-    for role in $ROLES; do
+if [[ -n "$ALL_CLUSTER_ROLES" ]]; then
+    for role in $ALL_CLUSTER_ROLES; do
         delete_iam_role "$role"
     done
-done
+else
+    echo -e "${GREEN}✓ No IAM roles found with '${CLUSTER_NAME}' in name${NC}"
+fi
 
-# 4. Delete instance profiles matching cluster name
-echo -e "${CYAN}Looking for instance profiles...${NC}"
-for profile_pattern in "${CLUSTER_NAME}" "${INFRA_ID}" "ocp-controlplane" "ocp-worker"; do
-    PROFILES=$(aws iam list-instance-profiles \
-        --query "InstanceProfiles[?contains(InstanceProfileName, '${profile_pattern}')].InstanceProfileName" \
-        --output text 2>/dev/null || echo "")
-    
-    for profile in $PROFILES; do
+# Delete instance profiles containing cluster name
+echo -e "${CYAN}Looking for instance profiles containing '${CLUSTER_NAME}'...${NC}"
+
+ALL_CLUSTER_PROFILES=$(aws iam list-instance-profiles \
+    --query "InstanceProfiles[?contains(InstanceProfileName, '${CLUSTER_NAME}')].InstanceProfileName" \
+    --output text 2>/dev/null || echo "")
+
+if [[ -n "$ALL_CLUSTER_PROFILES" ]]; then
+    for profile in $ALL_CLUSTER_PROFILES; do
         echo "  Deleting instance profile: $profile"
         if [[ "$DRY_RUN" != "true" ]]; then
-            # First remove any roles
             for role in $(aws iam get-instance-profile --instance-profile-name "$profile" --query 'InstanceProfile.Roles[*].RoleName' --output text 2>/dev/null); do
                 aws iam remove-role-from-instance-profile --instance-profile-name "$profile" --role-name "$role" 2>/dev/null || true
             done
             aws iam delete-instance-profile --instance-profile-name "$profile" 2>/dev/null || true
+        else
+            echo -e "  ${YELLOW}[DRY-RUN] Would delete${NC}"
         fi
     done
-done
+else
+    echo -e "${GREEN}✓ No instance profiles found with '${CLUSTER_NAME}' in name${NC}"
+fi
 
-echo -e "${GREEN}✓ IAM roles cleanup complete${NC}"
+echo -e "${GREEN}✓ IAM cleanup complete${NC}"
 
 # ==============================================================================
-# PHASE 8: Delete IAM Policies
+# PHASE 8: Delete IAM Policies (filter by cluster name)
 # ==============================================================================
 echo
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
@@ -435,14 +437,18 @@ echo -e "${BLUE}═════════════════════�
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
 
-for policy_pattern in "ocp-controlplane" "ocp-worker" "ocpcontrolplane" "ocpworkernode"; do
-    POLICIES=$(aws iam list-policies --scope Local \
-        --query "Policies[?contains(PolicyName, '${policy_pattern}')].Arn" \
-        --output text 2>/dev/null || echo "")
-    
-    for policy_arn in $POLICIES; do
+# Delete all policies containing the cluster name
+echo -e "${CYAN}Looking for IAM policies containing '${CLUSTER_NAME}'...${NC}"
+
+ALL_CLUSTER_POLICIES=$(aws iam list-policies --scope Local \
+    --query "Policies[?contains(PolicyName, '${CLUSTER_NAME}')].Arn" \
+    --output text 2>/dev/null || echo "")
+
+if [[ -n "$ALL_CLUSTER_POLICIES" ]]; then
+    for policy_arn in $ALL_CLUSTER_POLICIES; do
         if [[ -n "$policy_arn" ]] && [[ "$policy_arn" != "None" ]]; then
-            echo -e "${CYAN}Deleting policy: $policy_arn${NC}"
+            POLICY_NAME=$(echo "$policy_arn" | awk -F'/' '{print $NF}')
+            echo -e "${CYAN}Deleting policy: $POLICY_NAME${NC}"
             if [[ "$DRY_RUN" != "true" ]]; then
                 # Detach from all entities
                 for role in $(aws iam list-entities-for-policy --policy-arn "$policy_arn" --query 'PolicyRoles[*].RoleName' --output text 2>/dev/null); do
@@ -453,11 +459,17 @@ for policy_pattern in "ocp-controlplane" "ocp-worker" "ocpcontrolplane" "ocpwork
                     aws iam delete-policy-version --policy-arn "$policy_arn" --version-id "$version" 2>/dev/null || true
                 done
                 # Delete policy
-                aws iam delete-policy --policy-arn "$policy_arn" 2>/dev/null || true
+                aws iam delete-policy --policy-arn "$policy_arn" 2>/dev/null && \
+                    echo -e "  ${GREEN}✓ Deleted${NC}" || \
+                    echo -e "  ${YELLOW}⚠ Could not delete${NC}"
+            else
+                echo -e "  ${YELLOW}[DRY-RUN] Would delete${NC}"
             fi
         fi
     done
-done
+else
+    echo -e "${GREEN}✓ No IAM policies found with '${CLUSTER_NAME}' in name${NC}"
+fi
 
 # ==============================================================================
 # PHASE 9: Delete OIDC Provider
@@ -482,29 +494,32 @@ for oidc_arn in $OIDC_PROVIDERS; do
 done
 
 # ==============================================================================
-# PHASE 10: Delete S3 Buckets
+# PHASE 10: Delete S3 Buckets (filter by cluster name)
 # ==============================================================================
 echo
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}Phase 10: Delete S3 Buckets${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# OIDC bucket
-OIDC_BUCKET=$(grep '^s3_bucket_name_oidc' env/demo.tfvars 2>/dev/null | awk -F'"' '{print $2}' || echo "")
-if [[ -n "$OIDC_BUCKET" ]]; then
-    if aws s3 ls "s3://${OIDC_BUCKET}" --region "$REGION" 2>/dev/null; then
-        echo -e "${CYAN}Deleting OIDC bucket: $OIDC_BUCKET${NC}"
-        run_cmd "aws s3 rm s3://${OIDC_BUCKET} --recursive --region $REGION"
-        run_cmd "aws s3 rb s3://${OIDC_BUCKET} --region $REGION"
-    fi
-fi
+# Find all buckets containing cluster name
+echo -e "${CYAN}Looking for S3 buckets containing '${CLUSTER_NAME}'...${NC}"
 
-# State bucket
-STATE_BUCKET="${INFRA_ID}-terraform-remote-state-storage-s3"
-if aws s3 ls "s3://${STATE_BUCKET}" --region "$REGION" 2>/dev/null; then
-    echo -e "${CYAN}Deleting state bucket: $STATE_BUCKET${NC}"
-    run_cmd "aws s3 rm s3://${STATE_BUCKET} --recursive --region $REGION"
-    run_cmd "aws s3 rb s3://${STATE_BUCKET} --region $REGION"
+ALL_CLUSTER_BUCKETS=$(aws s3api list-buckets --query "Buckets[?contains(Name, '${CLUSTER_NAME}')].Name" --output text 2>/dev/null || echo "")
+
+if [[ -n "$ALL_CLUSTER_BUCKETS" ]]; then
+    for bucket in $ALL_CLUSTER_BUCKETS; do
+        echo -e "${CYAN}Deleting S3 bucket: $bucket${NC}"
+        if [[ "$DRY_RUN" != "true" ]]; then
+            aws s3 rm "s3://${bucket}" --recursive --region "$REGION" 2>/dev/null || true
+            aws s3 rb "s3://${bucket}" --region "$REGION" 2>/dev/null && \
+                echo -e "  ${GREEN}✓ Deleted${NC}" || \
+                echo -e "  ${YELLOW}⚠ Could not delete${NC}"
+        else
+            echo -e "  ${YELLOW}[DRY-RUN] Would delete${NC}"
+        fi
+    done
+else
+    echo -e "${GREEN}✓ No S3 buckets found with '${CLUSTER_NAME}' in name${NC}"
 fi
 
 # ==============================================================================
@@ -522,22 +537,36 @@ if aws dynamodb describe-table --table-name "$DYNAMO_TABLE" --region "$REGION" 2
 fi
 
 # ==============================================================================
-# PHASE 12: Delete KMS Aliases (not the keys - they may be shared)
+# PHASE 12: Delete KMS Aliases (filter by cluster name, not the keys)
 # ==============================================================================
 echo
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}Phase 12: Delete KMS Aliases${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# Delete terraform state KMS alias
-STATE_KMS_ALIAS="alias/s3-terraform-state-${CLUSTER_NAME}"
-if aws kms describe-key --key-id "$STATE_KMS_ALIAS" --region "$REGION" 2>/dev/null; then
-    echo -e "${CYAN}Deleting KMS alias: $STATE_KMS_ALIAS${NC}"
-    run_cmd "aws kms delete-alias --alias-name '$STATE_KMS_ALIAS' --region $REGION"
+# Find all KMS aliases containing cluster name
+echo -e "${CYAN}Looking for KMS aliases containing '${CLUSTER_NAME}'...${NC}"
+
+ALL_CLUSTER_ALIASES=$(aws kms list-aliases --region "$REGION" \
+    --query "Aliases[?contains(AliasName, '${CLUSTER_NAME}')].AliasName" \
+    --output text 2>/dev/null || echo "")
+
+if [[ -n "$ALL_CLUSTER_ALIASES" ]]; then
+    for alias_name in $ALL_CLUSTER_ALIASES; do
+        echo -e "${CYAN}Deleting KMS alias: $alias_name${NC}"
+        if [[ "$DRY_RUN" != "true" ]]; then
+            aws kms delete-alias --alias-name "$alias_name" --region "$REGION" 2>/dev/null && \
+                echo -e "  ${GREEN}✓ Deleted${NC}" || \
+                echo -e "  ${YELLOW}⚠ Could not delete${NC}"
+        else
+            echo -e "  ${YELLOW}[DRY-RUN] Would delete${NC}"
+        fi
+    done
+else
+    echo -e "${GREEN}✓ No KMS aliases found with '${CLUSTER_NAME}' in name${NC}"
 fi
 
-echo -e "${YELLOW}Note: KMS keys are NOT deleted (they may be shared). Delete manually if needed:${NC}"
-echo "  aws kms schedule-key-deletion --key-id <KEY_ID> --pending-window-in-days 7 --region $REGION"
+echo -e "${YELLOW}Note: KMS keys are NOT deleted (they may be shared). Delete manually if needed.${NC}"
 
 # ==============================================================================
 # PHASE 13: Clean Local Files
