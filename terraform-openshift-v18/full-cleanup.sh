@@ -87,89 +87,50 @@ if [[ "$AWS_DESTROY" == "true" ]]; then
     echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
     echo
     
-    # Step 1a: Delete DNS Records
-    echo -e "${CYAN}Step 1a: Deleting Route53 DNS records...${NC}"
-    if [[ -f "env/demo.tfvars" ]]; then
-        # Parse values from demo.tfvars
-        HOSTED_ZONE=$(grep '^hosted_zone' env/demo.tfvars | awk -F'"' '{print $2}')
-        CLUSTER_NAME=$(grep '^cluster_name' env/demo.tfvars | awk -F'"' '{print $2}')
-        DOMAIN=$(grep '^domain' env/demo.tfvars | awk -F'"' '{print $2}')
-        
-        if [[ -n "$HOSTED_ZONE" ]] && [[ -n "$CLUSTER_NAME" ]] && [[ -n "$DOMAIN" ]]; then
-            echo -e "${CYAN}  Parsed from demo.tfvars:${NC}"
-            echo -e "    Hosted Zone: $HOSTED_ZONE"
-            echo -e "    Cluster Name: $CLUSTER_NAME"
-            echo -e "    Domain: $DOMAIN"
-            echo
-            
-            if [[ -f "delete-record.sh" ]]; then
-                chmod +x delete-record.sh
-                
-                # Delete API record
-                echo -e "${CYAN}  Deleting api.$CLUSTER_NAME.$DOMAIN...${NC}"
-                ./delete-record.sh "$HOSTED_ZONE" "api.$CLUSTER_NAME.$DOMAIN" 2>/dev/null || \
-                    echo -e "${YELLOW}  ⚠ API record not found or already deleted${NC}"
-                
-                # Delete API-INT record
-                echo -e "${CYAN}  Deleting api-int.$CLUSTER_NAME.$DOMAIN...${NC}"
-                ./delete-record.sh "$HOSTED_ZONE" "api-int.$CLUSTER_NAME.$DOMAIN" 2>/dev/null || \
-                    echo -e "${YELLOW}  ⚠ API-INT record not found or already deleted${NC}"
-                
-                # Delete wildcard apps record
-                echo -e "${CYAN}  Deleting *.apps.$CLUSTER_NAME.$DOMAIN...${NC}"
-                ./delete-record.sh "$HOSTED_ZONE" "*.apps.$CLUSTER_NAME.$DOMAIN" 2>/dev/null || \
-                    echo -e "${YELLOW}  ⚠ Apps wildcard record not found or already deleted${NC}"
-                
-                echo -e "${GREEN}✓ DNS records cleanup complete${NC}"
-            else
-                echo -e "${YELLOW}  ⚠ delete-record.sh not found, skipping DNS cleanup${NC}"
-            fi
-        else
-            echo -e "${YELLOW}  ⚠ Could not parse required values from demo.tfvars${NC}"
-            echo -e "${YELLOW}  Skipping DNS records cleanup${NC}"
-        fi
+    # Use the comprehensive destroy script if available
+    if [[ -f "destroy-cluster.sh" ]]; then
+        echo -e "${CYAN}Running comprehensive destroy-cluster.sh...${NC}"
+        chmod +x destroy-cluster.sh
+        ./destroy-cluster.sh --auto-approve || echo -e "${YELLOW}⚠ Destroy script had errors (continuing with local cleanup)${NC}"
     else
-        echo -e "${YELLOW}  ⚠ demo.tfvars not found, skipping DNS cleanup${NC}"
-    fi
-    echo
-    
-    # Step 1b: Delete old OIDC roles (to avoid trust policy mismatch on reinstall)
-    echo -e "${CYAN}Step 1b: Deleting old OIDC roles...${NC}"
-    if [[ -n "$CLUSTER_NAME" ]]; then
-        for role in $(aws iam list-roles --query "Roles[?contains(RoleName,'${CLUSTER_NAME}-openshift')].RoleName" --output text 2>/dev/null); do
-            echo -e "  Deleting role: $role"
-            # Delete inline policies first
-            for policy in $(aws iam list-role-policies --role-name "$role" --query 'PolicyNames' --output text 2>/dev/null); do
-                aws iam delete-role-policy --role-name "$role" --policy-name "$policy" 2>/dev/null || true
-            done
-            # Delete attached policies
-            for policy_arn in $(aws iam list-attached-role-policies --role-name "$role" --query 'AttachedPolicies[*].PolicyArn' --output text 2>/dev/null); do
-                aws iam detach-role-policy --role-name "$role" --policy-arn "$policy_arn" 2>/dev/null || true
-            done
-            # Delete the role
-            aws iam delete-role --role-name "$role" 2>/dev/null && \
-                echo -e "${GREEN}  ✓ Deleted: $role${NC}" || \
-                echo -e "${YELLOW}  ⚠ Could not delete: $role${NC}"
-        done
-        echo -e "${GREEN}✓ OIDC roles cleanup complete${NC}"
-    else
-        echo -e "${YELLOW}  ⚠ CLUSTER_NAME not set, skipping OIDC roles cleanup${NC}"
-    fi
-    echo
-
-    # Step 1c: Destroy Cluster
-    echo -e "${CYAN}Step 1c: Destroying OpenShift cluster...${NC}"
-    if [[ -f "delete-cluster.sh" ]]; then
-        echo -e "${CYAN}Running delete-cluster.sh...${NC}"
-        chmod +x delete-cluster.sh
-        ./delete-cluster.sh || echo -e "${YELLOW}⚠ Delete cluster script had errors (continuing)${NC}"
-    else
-        echo -e "${YELLOW}⚠ delete-cluster.sh not found, trying terraform destroy...${NC}"
+        # Fallback to manual cleanup
+        echo -e "${CYAN}Step 1a: Deleting Route53 DNS records...${NC}"
         if [[ -f "env/demo.tfvars" ]]; then
-            terraform destroy -var-file=env/demo.tfvars -refresh=false -auto-approve || \
-                echo -e "${YELLOW}⚠ Terraform destroy had errors (continuing with cleanup)${NC}"
-        else
-            echo -e "${RED}✗ Cannot destroy: demo.tfvars not found${NC}"
+            # Parse values from demo.tfvars
+            HOSTED_ZONE=$(grep '^hosted_zone' env/demo.tfvars | awk -F'"' '{print $2}')
+            CLUSTER_NAME=$(grep '^cluster_name' env/demo.tfvars | awk -F'"' '{print $2}')
+            DOMAIN=$(grep '^domain' env/demo.tfvars | awk -F'"' '{print $2}')
+            
+            if [[ -n "$HOSTED_ZONE" ]] && [[ -n "$CLUSTER_NAME" ]] && [[ -n "$DOMAIN" ]]; then
+                if [[ -f "delete-record.sh" ]]; then
+                    chmod +x delete-record.sh
+                    ./delete-record.sh "$HOSTED_ZONE" "api.$CLUSTER_NAME.$DOMAIN" 2>/dev/null || true
+                    ./delete-record.sh "$HOSTED_ZONE" "api-int.$CLUSTER_NAME.$DOMAIN" 2>/dev/null || true
+                    ./delete-record.sh "$HOSTED_ZONE" "*.apps.$CLUSTER_NAME.$DOMAIN" 2>/dev/null || true
+                fi
+            fi
+        fi
+        
+        # Step 1b: Delete old OIDC roles
+        echo -e "${CYAN}Step 1b: Deleting old OIDC roles...${NC}"
+        CLUSTER_NAME=$(grep '^cluster_name' env/demo.tfvars 2>/dev/null | awk -F'"' '{print $2}')
+        if [[ -n "$CLUSTER_NAME" ]]; then
+            for role in $(aws iam list-roles --query "Roles[?contains(RoleName,'${CLUSTER_NAME}-openshift')].RoleName" --output text 2>/dev/null); do
+                for policy in $(aws iam list-role-policies --role-name "$role" --query 'PolicyNames' --output text 2>/dev/null); do
+                    aws iam delete-role-policy --role-name "$role" --policy-name "$policy" 2>/dev/null || true
+                done
+                for policy_arn in $(aws iam list-attached-role-policies --role-name "$role" --query 'AttachedPolicies[*].PolicyArn' --output text 2>/dev/null); do
+                    aws iam detach-role-policy --role-name "$role" --policy-arn "$policy_arn" 2>/dev/null || true
+                done
+                aws iam delete-role --role-name "$role" 2>/dev/null || true
+            done
+        fi
+
+        # Step 1c: Destroy Cluster
+        echo -e "${CYAN}Step 1c: Destroying OpenShift cluster...${NC}"
+        if [[ -f "delete-cluster.sh" ]]; then
+            chmod +x delete-cluster.sh
+            ./delete-cluster.sh || true
         fi
     fi
     echo

@@ -112,6 +112,47 @@ Backs up cluster state to S3. **Called automatically by Terraform.**
 
 ### Cleanup Scripts
 
+#### destroy-cluster.sh
+
+**Comprehensive cluster destroy script.** Safely deletes ALL cluster resources using tags and naming patterns.
+
+```bash
+# Interactive mode (asks for confirmation)
+./destroy-cluster.sh
+
+# Non-interactive mode
+./destroy-cluster.sh --auto-approve
+
+# Dry-run mode (shows what would be deleted)
+./destroy-cluster.sh --dry-run
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| (none) | Interactive mode, asks for confirmation |
+| `--auto-approve` | Non-interactive, no confirmation |
+| `--dry-run` | Show what would be deleted without deleting |
+
+**What it deletes (in order):**
+1. OpenShift cluster (via installer)
+2. EC2 instances (by cluster tag)
+3. Load balancers (NLB/ALB/Classic)
+4. Target groups
+5. Security groups (by cluster tag)
+6. Route53 DNS records (public & private zones)
+7. IAM roles (OIDC + Terraform-created)
+8. IAM policies
+9. OIDC provider
+10. S3 buckets (OIDC + state)
+11. DynamoDB table
+12. KMS aliases (not keys)
+13. Local files
+
+**Safety:** Only deletes resources with cluster tag `kubernetes.io/cluster/<infra-id>=owned` or named with cluster name prefix.
+
+---
+
 #### full-cleanup.sh
 
 **Recommended cleanup script.** Removes all local files and optionally AWS resources.
@@ -120,7 +161,7 @@ Backs up cluster state to S3. **Called automatically by Terraform.**
 # Local files only (safe)
 ./full-cleanup.sh
 
-# Full cleanup including AWS resources
+# Full cleanup including AWS resources (uses destroy-cluster.sh)
 ./full-cleanup.sh --with-aws-destroy
 ```
 
@@ -128,14 +169,14 @@ Backs up cluster state to S3. **Called automatically by Terraform.**
 | Option | Description |
 |--------|-------------|
 | (none) | Remove local files only |
-| `--with-aws-destroy` | Also destroy AWS resources (DNS, OIDC roles, cluster) |
+| `--with-aws-destroy` | Also destroy AWS resources (calls destroy-cluster.sh) |
 
 **What it removes:**
 - Terraform state and cache
 - OpenShift installer files
 - CCOCTL output
 - Log files
-- (Optional) Route53 records, OIDC roles, cluster resources
+- (Optional) All AWS cluster resources
 
 ---
 
