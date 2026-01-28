@@ -72,12 +72,21 @@ aws_private_subnets = [
   "subnet-XXXXXXXXXXXXXXXXX"
 ]
 
-# Public subnets (optional - for public-facing load balancers)
-aws_public_subnets = [
-  "subnet-XXXXXXXXXXXXXXXXX",
-  "subnet-XXXXXXXXXXXXXXXXX",
-  "subnet-XXXXXXXXXXXXXXXXX"
-]
+# Public subnets (OPTIONAL - only needed for public-facing load balancers)
+# If your environment is fully private (no public subnets), set this to an empty list:
+#   aws_public_subnets = []
+# Or simply comment out this variable entirely - it defaults to empty.
+#
+# Note: OpenShift can run fully private without public subnets as long as:
+#   - Private subnets have NAT Gateway access for egress (or proxy)
+#   - Internal NLB is used for API and Ingress
+aws_public_subnets = []
+# Example with public subnets:
+# aws_public_subnets = [
+#   "subnet-XXXXXXXXXXXXXXXXX",
+#   "subnet-XXXXXXXXXXXXXXXXX",
+#   "subnet-XXXXXXXXXXXXXXXXX"
+# ]
 
 # Availability zones
 aws_worker_availability_zones = ["eu-west-3a", "eu-west-3b", "eu-west-3c"]
