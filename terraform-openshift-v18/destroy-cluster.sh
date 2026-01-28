@@ -136,20 +136,23 @@ echo -e "${BLUE}═════════════════════�
 echo -e "${BLUE}Phase 1: OpenShift Installer Destroy${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-if [[ -f "installer-files/metadata.json" ]] || [[ -f "installer-files/auth/kubeconfig" ]]; then
-    echo -e "${CYAN}Running openshift-install destroy cluster...${NC}"
-    if [[ "$DRY_RUN" != "true" ]]; then
-        export SkipDestroyingSharedTags=On
-        export IgnoreErrorsOnSharedTags=On
-        timeout -k 35m 30m ./openshift-install destroy cluster --dir=installer-files --log-level=info 2>&1 || \
-            echo -e "${YELLOW}⚠ Installer destroy completed with warnings (continuing cleanup)${NC}"
-    else
-        echo -e "${YELLOW}[DRY-RUN] Would run: openshift-install destroy cluster${NC}"
-    fi
+echo -e "${CYAN}Running openshift-install destroy cluster...${NC}"
+echo -e "${CYAN}Environment: SkipDestroyingSharedTags=On IgnoreErrorsOnSharedTags=On${NC}"
+
+if [[ "$DRY_RUN" != "true" ]]; then
+    # Run openshift-install destroy with environment variables to protect shared resources
+    # - SkipDestroyingSharedTags=On: Don't destroy resources with shared tags (subnets, VPC, etc.)
+    # - IgnoreErrorsOnSharedTags=On: Continue even if shared tag operations fail
+    SkipDestroyingSharedTags=On IgnoreErrorsOnSharedTags=On \
+        ./openshift-install destroy cluster --dir=installer-files --log-level=debug 2>&1 || \
+        echo -e "${YELLOW}⚠ Installer destroy completed with warnings (this is normal for shared VPC)${NC}"
 else
-    echo -e "${YELLOW}⚠ No installer-files found, skipping installer destroy${NC}"
-    echo "  Will clean up resources by tag instead"
+    echo -e "  ${YELLOW}[DRY-RUN] Would run:${NC}"
+    echo -e "  ${YELLOW}SkipDestroyingSharedTags=On IgnoreErrorsOnSharedTags=On ./openshift-install destroy cluster --dir=installer-files --log-level=debug${NC}"
 fi
+
+echo -e "${GREEN}✓ OpenShift installer destroy phase complete${NC}"
+
 
 # ==============================================================================
 # PHASE 2: Delete EC2 Instances by Tag (if any remain)

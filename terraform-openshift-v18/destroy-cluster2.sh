@@ -159,21 +159,22 @@ echo -e "${BLUE}═════════════════════�
 echo -e "${BLUE}Phase 1: OpenShift Installer Destroy${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-if [[ -f "installer-files/metadata.json" ]]; then
-    echo -e "${CYAN}Running openshift-install destroy cluster...${NC}"
-    export AWS_REGION="$REGION"
-    export SkipDestroyingSharedTags=On
-    export IgnoreErrorsOnSharedTags=On
-    
-    if [[ "$DRY_RUN" != "true" ]]; then
-        timeout -k 30m 25m ./openshift-install destroy cluster --dir=installer-files --log-level=info 2>&1 || \
-            echo -e "${YELLOW}⚠ Installer destroy completed with warnings${NC}"
-    else
-        echo -e "  ${YELLOW}[DRY-RUN] Would run: openshift-install destroy cluster${NC}"
-    fi
+echo -e "${CYAN}Running openshift-install destroy cluster...${NC}"
+echo -e "${CYAN}Environment: SkipDestroyingSharedTags=On IgnoreErrorsOnSharedTags=On${NC}"
+
+if [[ "$DRY_RUN" != "true" ]]; then
+    # Run openshift-install destroy with environment variables to protect shared resources
+    # - SkipDestroyingSharedTags=On: Don't destroy resources with shared tags (subnets, VPC, etc.)
+    # - IgnoreErrorsOnSharedTags=On: Continue even if shared tag operations fail
+    SkipDestroyingSharedTags=On IgnoreErrorsOnSharedTags=On \
+        ./openshift-install destroy cluster --dir=installer-files --log-level=debug 2>&1 || \
+        echo -e "${YELLOW}⚠ Installer destroy completed with warnings (this is normal for shared VPC)${NC}"
 else
-    echo -e "${YELLOW}⚠ No installer-files/metadata.json found, skipping installer destroy${NC}"
+    echo -e "  ${YELLOW}[DRY-RUN] Would run:${NC}"
+    echo -e "  ${YELLOW}SkipDestroyingSharedTags=On IgnoreErrorsOnSharedTags=On ./openshift-install destroy cluster --dir=installer-files --log-level=debug${NC}"
 fi
+
+echo -e "${GREEN}✓ OpenShift installer destroy phase complete${NC}"
 
 # ==============================================================================
 # PHASE 2: Delete DNS Records
