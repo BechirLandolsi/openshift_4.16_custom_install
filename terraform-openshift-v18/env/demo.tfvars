@@ -44,6 +44,10 @@ openshift_pull_secret = "openshift/openshift_pull_secret.json"
 # Cluster name - used for resource naming and DNS
 cluster_name = "my-ocp-cluster"
 
+# Path to this tfvars file (used by destroy scripts)
+# Change this if you rename this file (e.g., "env/prod.tfvars")
+tfvars_file = "env/demo.tfvars"
+
 # Infra random ID - must match the tag on your subnets
 # Format: <prefix>-<random5chars> (e.g., "demo-a1b2c")
 # This creates the full InfraID: my-ocp-cluster-a1b2c

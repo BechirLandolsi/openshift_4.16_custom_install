@@ -10,12 +10,14 @@
 #   $2 - cluster_name
 #   $3 - domain
 #   $4 - bucket
+#   $5 - tfvars_file (optional)
 # ==============================================================================
 
 hostedzone=$1
 cluster=$2
 domain=$3
 bucket=$4
+tfvars_file=${5:-""}
 
 echo "=============================================="
 echo "OpenShift Cluster Cleanup"
@@ -24,6 +26,7 @@ echo "Hosted Zone: $hostedzone"
 echo "Cluster: $cluster"
 echo "Domain: $domain"
 echo "Bucket: $bucket"
+echo "TFVars: ${tfvars_file:-auto-detect}"
 echo ""
 
 # Try to fetch installer files from S3 if not present locally
@@ -43,7 +46,11 @@ if [[ -f "destroy-cluster.sh" ]]; then
     echo ""
     echo "Using comprehensive destroy-cluster.sh..."
     chmod +x destroy-cluster.sh
-    ./destroy-cluster.sh --auto-approve
+    if [[ -n "$tfvars_file" ]]; then
+        ./destroy-cluster.sh --auto-approve --var-file="$tfvars_file"
+    else
+        ./destroy-cluster.sh --auto-approve
+    fi
 else
     # Fallback to basic cleanup
     echo ""

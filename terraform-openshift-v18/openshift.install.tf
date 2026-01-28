@@ -2,10 +2,11 @@ resource "null_resource" "openshift_install" {
   depends_on = [local_file.cluster_ingress, aws_s3_object.keys, null_resource.save_manifests]
 
   triggers = {
-    hosted_zone = var.hosted_zone
+    hosted_zone  = var.hosted_zone
     cluster_name = var.cluster_name
-    domain = var.domain
-    bucket = join("-", [lower(var.cluster_name), lower(var.infra_random_id), "terraform-remote-state-storage-s3"])
+    domain       = var.domain
+    bucket       = join("-", [lower(var.cluster_name), lower(var.infra_random_id), "terraform-remote-state-storage-s3"])
+    tfvars_file  = var.tfvars_file
   }
 
   provisioner "local-exec" {
@@ -17,7 +18,7 @@ resource "null_resource" "openshift_install" {
     when = destroy
     interpreter = ["bash","-c"]
     command     = <<EOT
-        sh clean-cluster.sh ${self.triggers.hosted_zone} ${self.triggers.cluster_name} ${self.triggers.domain} ${self.triggers.bucket}
+        sh clean-cluster.sh ${self.triggers.hosted_zone} ${self.triggers.cluster_name} ${self.triggers.domain} ${self.triggers.bucket} ${self.triggers.tfvars_file}
     EOT
   }
 

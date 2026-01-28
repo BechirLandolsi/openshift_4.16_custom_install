@@ -32,23 +32,44 @@ cd "$SCRIPT_DIR"
 # Parse arguments
 AUTO_APPROVE=false
 DRY_RUN=false
+TFVARS_FILE=""
+
 for arg in "$@"; do
     case $arg in
         --auto-approve) AUTO_APPROVE=true ;;
         --dry-run) DRY_RUN=true ;;
+        --var-file=*) TFVARS_FILE="${arg#*=}" ;;
+        *.tfvars) TFVARS_FILE="$arg" ;;
     esac
 done
 
+# Find tfvars file (priority: argument > env variable > default)
+if [[ -z "$TFVARS_FILE" ]]; then
+    TFVARS_FILE="${TF_VAR_FILE:-}"
+fi
+if [[ -z "$TFVARS_FILE" ]]; then
+    # Try common default locations
+    for f in "env/demo.tfvars" "env/prod.tfvars" "env/staging.tfvars" "terraform.tfvars"; do
+        if [[ -f "$f" ]]; then
+            TFVARS_FILE="$f"
+            break
+        fi
+    done
+fi
+
 # Load configuration from tfvars
-if [[ -f "env/demo.tfvars" ]]; then
-    CLUSTER_NAME=$(grep '^cluster_name' env/demo.tfvars | awk -F'"' '{print $2}')
-    INFRA_RANDOM_ID=$(grep '^infra_random_id' env/demo.tfvars | awk -F'"' '{print $2}')
-    REGION=$(grep '^region' env/demo.tfvars | awk -F'"' '{print $2}')
-    DOMAIN=$(grep '^domain' env/demo.tfvars | awk -F'"' '{print $2}')
-    HOSTED_ZONE=$(grep '^hosted_zone' env/demo.tfvars | awk -F'"' '{print $2}')
-    KMS_ALIAS=$(grep '^kms_ec2_alias' env/demo.tfvars | awk -F'"' '{print $2}')
+if [[ -n "$TFVARS_FILE" ]] && [[ -f "$TFVARS_FILE" ]]; then
+    echo -e "${CYAN}Loading configuration from: ${TFVARS_FILE}${NC}"
+    CLUSTER_NAME=$(grep '^cluster_name' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    INFRA_RANDOM_ID=$(grep '^infra_random_id' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    REGION=$(grep '^region' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    DOMAIN=$(grep '^domain' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    HOSTED_ZONE=$(grep '^hosted_zone' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    KMS_ALIAS=$(grep '^kms_ec2_alias' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 else
-    echo -e "${RED}Error: env/demo.tfvars not found${NC}"
+    echo -e "${RED}Error: No tfvars file found${NC}"
+    echo "Usage: $0 [--var-file=env/myfile.tfvars] [--dry-run] [--auto-approve]"
+    echo "   or: TF_VAR_FILE=env/myfile.tfvars $0 [--dry-run] [--auto-approve]"
     exit 1
 fi
 

@@ -4,6 +4,12 @@ variable "region" {
   description = "The AWS region"
 }
 
+variable "tfvars_file" {
+  type        = string
+  default     = "env/demo.tfvars"
+  description = "Path to the tfvars file (used by destroy script)"
+}
+
 variable "tags" {
   type = map(string)
   description = "The tag you want to add"
