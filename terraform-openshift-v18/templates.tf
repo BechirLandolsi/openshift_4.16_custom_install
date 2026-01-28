@@ -21,6 +21,8 @@ controlPlane:
         type: ${var.aws_master_volume_type}
         # kmsKeyARN not needed - AMI is already encrypted with the CMK
       type: ${var.aws_master_instance_type}
+      metadataService:
+        authentication: Required
   replicas: ${var.master_count}
 
 compute:
@@ -38,6 +40,8 @@ compute:
         type: ${var.aws_worker_root_volume_type}
         # kmsKeyARN not needed - AMI is already encrypted with the CMK
       type: ${var.aws_worker_instance_type}
+      metadataService:
+        authentication: Required
   replicas: ${var.worker_count}
 
 metadata:
@@ -102,9 +106,8 @@ spec:
       dnsManagementPolicy: Unmanaged
       providerParameters:
         aws:
-          classicLoadBalancer:
-            connectionIdleTimeout: 0s
-          type: Classic
+          networkLoadBalancer: {}
+          type: NLB
         type: AWS
     type: LoadBalancerService
   httpCompression: {}
@@ -187,6 +190,8 @@ spec:
             id: ${var.cluster_name}-${var.infra_random_id}-worker-profile
           instanceType: ${var.aws_infra_instance_type}
           kind: AWSMachineProviderConfig
+          metadataServiceOptions:
+            authentication: Required
           placement:
             availabilityZone: ${var.aws_worker_availability_zones[count.index]}
             region: ${var.region}
@@ -213,4 +218,3 @@ spec:
         value: reserved
 EOF
 }
-
