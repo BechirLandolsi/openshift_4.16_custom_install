@@ -6,7 +6,6 @@ variable "region" {
 
 variable "tfvars_file" {
   type        = string
-  default     = "env/demo.tfvars"
   description = "Path to the tfvars file (used by destroy script)"
 }
 

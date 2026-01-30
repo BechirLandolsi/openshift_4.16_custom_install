@@ -25,7 +25,7 @@ export KMS_KEY_ALIAS="alias/my-openshift-key"
 **Environment Variables:**
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AWS_REGION` | `eu-west-3` | AWS region |
+| `AWS_REGION` | From AWS CLI config | AWS region |
 | `KMS_KEY_ALIAS` | `alias/openshift-ebs-encryption` | Key alias name |
 | `KMS_KEY_DESCRIPTION` | `OpenShift 4.16 EBS Encryption Key` | Key description |
 
@@ -52,7 +52,7 @@ export RHCOS_VERSION="4.16.51"
 **Environment Variables:**
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AWS_REGION` | `eu-west-3` | AWS region |
+| `AWS_REGION` | From AWS CLI config | AWS region |
 | `KMS_KEY_ID` | (from kms-key-result.env) | KMS key ARN or alias |
 | `RHCOS_VERSION` | `4.16.51` | RHCOS version to download |
 | `S3_BUCKET_NAME` | auto-generated | Temp bucket for VMDK upload |
@@ -79,6 +79,37 @@ cat example-usage.sh
 
 Located in `terraform-openshift-v18/`
 
+### Pre-Install Check
+
+#### pre-install-checks.sh
+
+**Pre-installation conflict detection (READ-ONLY).** Run before `terraform apply` to detect resources that would cause "already exists" errors.
+
+```bash
+# Auto-detect tfvars file
+./pre-install-checks.sh
+
+# Specify tfvars file
+./pre-install-checks.sh env/demo.tfvars
+./pre-install-checks.sh env/prod.tfvars
+```
+
+**What it checks:**
+| Resource | Error it prevents |
+|----------|-------------------|
+| DNS records (`*.apps.cluster.domain`) | `InvalidChangeBatch` |
+| S3 bucket (`cluster-infra-terraform-state-storage-s3`) | `BucketAlreadyOwnedByYou` |
+| DynamoDB table (`cluster-terraform-locks`) | `ResourceInUseException` |
+| KMS alias (`alias/s3-terraform-state-cluster`) | `AlreadyExistsException` |
+| Local files (`installer-files/`, `terraform.tfstate`) | State conflicts |
+
+**Output:**
+- Lists all conflicts found
+- Provides exact commands to delete each conflict
+- Does NOT delete anything automatically
+
+---
+
 ### Core Lifecycle Scripts
 
 #### create-cluster.sh
@@ -89,20 +120,52 @@ Called by Terraform to run the OpenShift installer. **Do not run manually.**
 # Called automatically by Terraform with:
 # - IgnoreErrorsOnSharedTags=On
 # - ForceOpenshiftInfraIDRandomPart=${infra_random_id}
+# - Starts background DNS creation process
 ```
 
-#### delete-cluster.sh
+**What it does:**
+1. Loads configuration from tfvars file
+2. Sets environment variables for custom installer
+3. Starts `create-private-dns.sh` in background
+4. Runs `openshift-install create cluster`
 
-Destroys the OpenShift cluster. **Do not run manually.**
+---
+
+#### create-private-dns.sh
+
+Background script that creates DNS records during installation. **Do not run manually.**
 
 ```bash
-# Called automatically by Terraform with:
-# - SkipDestroyingSharedTags=On
+# Called by create-cluster.sh with:
+./create-private-dns.sh <cluster_name> <domain> <region> [public_zone_id]
 ```
+
+**What it does:**
+1. Waits for private hosted zone to be created by installer
+2. Waits for ingress LoadBalancer to be ready
+3. Creates `*.apps` CNAME record in private zone
+4. Creates `*.apps` CNAME record in public zone
+5. Logs progress to `output/private-dns.log`
+
+**Why it's needed:** Solves the authentication operator deadlock where the installer waits for auth operator, but auth operator needs DNS to resolve `oauth-openshift.apps.*`.
+
+---
 
 #### clean-cluster.sh
 
 Orchestrates cleanup during `terraform destroy`. **Do not run manually.**
+
+```bash
+# Called by Terraform during destroy with:
+# - hosted_zone, cluster_name, domain, bucket, tfvars_file
+```
+
+**What it does:**
+1. Fetches installer files from S3 if not local
+2. Calls `destroy-cluster.sh --auto-approve`
+3. Preserves local files
+
+---
 
 #### save-cluster-states.sh
 
@@ -110,145 +173,85 @@ Backs up cluster state to S3. **Called automatically by Terraform.**
 
 ---
 
-### Cleanup Scripts
+### Destroy Scripts
 
 #### destroy-cluster.sh
 
 **Comprehensive cluster destroy script.** Safely deletes ALL cluster resources using tags and naming patterns.
 
 ```bash
+# Dry-run mode (shows what would be deleted)
+./destroy-cluster.sh --dry-run
+
 # Interactive mode (asks for confirmation)
 ./destroy-cluster.sh
 
 # Non-interactive mode
 ./destroy-cluster.sh --auto-approve
 
-# Dry-run mode (shows what would be deleted)
-./destroy-cluster.sh --dry-run
+# Specify tfvars file
+./destroy-cluster.sh --var-file=env/prod.tfvars
+./destroy-cluster.sh env/prod.tfvars
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| (none) | Interactive mode, asks for confirmation |
-| `--auto-approve` | Non-interactive, no confirmation |
 | `--dry-run` | Show what would be deleted without deleting |
+| `--auto-approve` | Non-interactive, no confirmation |
+| `--var-file=<file>` | Specify tfvars file |
+| `<file>.tfvars` | Specify tfvars file (shorthand) |
 
-**What it deletes (in order):**
-1. OpenShift cluster (via installer)
-2. EC2 instances (by cluster tag)
-3. Load balancers (NLB/ALB/Classic)
-4. Target groups
-5. Security groups (by cluster tag)
-6. Route53 DNS records (public & private zones)
-7. IAM roles (OIDC + Terraform-created)
-8. IAM policies
-9. OIDC provider
-10. S3 buckets (OIDC + state)
-11. DynamoDB table
-12. KMS aliases (not keys)
-13. Local files
+**What it deletes (12 phases):**
+1. OpenShift cluster (via `openshift-install destroy cluster`)
+2. EC2 instances (by cluster tag/name)
+3. Elastic Network Interfaces
+4. Load balancers (NLB/ALB/Classic)
+5. Target groups
+6. Security groups
+7. Route53 DNS records (public & private zones)
+8. IAM roles (OIDC + Terraform-created)
+9. IAM policies
+10. OIDC provider
+11. S3 buckets (OIDC + state)
+12. DynamoDB table
 
-**Safety:** Only deletes resources with cluster tag `kubernetes.io/cluster/<infra-id>=owned` or named with cluster name prefix.
-
----
-
-#### full-cleanup.sh
-
-**Recommended cleanup script.** Removes all local files and optionally AWS resources.
-
-```bash
-# Local files only (safe)
-./full-cleanup.sh
-
-# Full cleanup including AWS resources (uses destroy-cluster.sh)
-./full-cleanup.sh --with-aws-destroy
-```
-
-**Options:**
-| Option | Description |
-|--------|-------------|
-| (none) | Remove local files only |
-| `--with-aws-destroy` | Also destroy AWS resources (calls destroy-cluster.sh) |
-
-**What it removes:**
-- Terraform state and cache
-- OpenShift installer files
-- CCOCTL output
-- Log files
-- (Optional) All AWS cluster resources
+**Safety:**
+- Only deletes resources with cluster tag `kubernetes.io/cluster/<infra-id>=owned`
+- Only deletes resources named with cluster name prefix
+- Preserves local files (`installer-files/`, `output/`, `terraform.tfstate`)
+- Uses `SkipDestroyingSharedTags=On` to protect shared subnet tags
 
 ---
 
-#### manual-cleanup.sh
+#### destroy-cluster2.sh
 
-Manual cleanup when `terraform destroy` fails.
-
-```bash
-# Edit variables in script first!
-vi manual-cleanup.sh  # Set REGION, CLUSTER_NAME, ACCOUNT_ID
-
-# Then run
-./manual-cleanup.sh
-```
-
-**Note:** Edit the script variables before running:
-- `REGION` - AWS region
-- `CLUSTER_NAME` - Your cluster name
-- `ACCOUNT_ID` - Your AWS account ID
-
----
-
-#### force-delete-iam.sh
-
-Force deletes IAM resources causing `EntityAlreadyExists` errors.
+**Targeted destroy script (customer version).** Deletes ONLY specific hardcoded resources.
 
 ```bash
-# Edit variables in script first!
-vi force-delete-iam.sh
+# Dry-run mode
+./destroy-cluster2.sh --dry-run
 
-# Then run
-./force-delete-iam.sh
+# Interactive mode
+./destroy-cluster2.sh
+
+# Non-interactive mode
+./destroy-cluster2.sh --auto-approve
 ```
 
-**Note:** Script has hardcoded role/policy names. Edit before use.
+**What it deletes (hardcoded list):**
+- DNS records: `api.<cluster>.<domain>`, `api-int.<cluster>.<domain>`
+- OIDC IAM roles (6 roles):
+  - `<cluster>-openshift-cloud-credential-operator-cloud-credential-operat`
+  - `<cluster>-openshift-cloud-network-config-controller-cloud-credentials`
+  - `<cluster>-openshift-cluster-csi-drivers-ebs-cloud-credentials`
+  - `<cluster>-openshift-image-registry-installer-cloud-credentials`
+  - `<cluster>-openshift-ingress-operator-cloud-credentials`
+  - `<cluster>-openshift-machine-api-aws-cloud-credentials`
+- Terraform IAM roles: `ocp-controlplane-role`, `ocp-worker-role`
+- Terraform IAM policies: `ocp-controlplane-policy`, `ocp-worker-policy`
 
----
-
-#### delete-roles.sh
-
-Deletes ccoctl-created IAM roles matching a prefix.
-
-```bash
-./delete-roles.sh <cluster-name>
-
-# Example
-./delete-roles.sh my-ocp-cluster
-```
-
-**Arguments:**
-| Argument | Description |
-|----------|-------------|
-| `<prefix>` | Cluster name prefix to match roles |
-
----
-
-#### delete-record.sh
-
-Deletes a Route53 DNS record.
-
-```bash
-./delete-record.sh <hosted-zone-id> <record-name>
-
-# Example
-./delete-record.sh Z0123456789 api.my-cluster.example.com
-```
-
-**Arguments:**
-| Argument | Description |
-|----------|-------------|
-| `<hosted-zone-id>` | Route53 hosted zone ID |
-| `<record-name>` | Full DNS record name to delete |
+**Use case:** When you need precise control over which resources are deleted.
 
 ---
 
@@ -256,25 +259,29 @@ Deletes a Route53 DNS record.
 
 #### verify-cluster.sh
 
-Verifies cluster health, KMS encryption, and tagging.
+Verifies cluster health, security settings, and encryption.
 
 ```bash
+# Auto-detect tfvars file
 ./verify-cluster.sh
+
+# Specify tfvars file
+./verify-cluster.sh env/demo.tfvars
+./verify-cluster.sh env/prod.tfvars
 ```
 
-**Auto-detects from `env/demo.tfvars`:**
-- Cluster name
-- Infra ID
-- Region
-- KMS alias
-
 **What it checks:**
-1. Node status (all Ready)
-2. Cluster operators (all healthy)
-3. EC2 instances with cluster tag
-4. KMS encryption on EBS volumes
-5. AMI encryption status
-6. KMS key policy principals
+| Check | Description |
+|-------|-------------|
+| Cluster Nodes | All nodes Ready status |
+| Cluster Operators | All operators Available/not Degraded |
+| EC2 Instances | Instances with cluster tag |
+| IMDSv2 Enforcement | All nodes have `HttpTokens=required` |
+| KMS Encryption | All EBS volumes encrypted with KMS |
+| AMI Encryption | AMI encrypted with correct KMS key |
+| KMS Key Policy | Correct principals in key policy |
+
+**Output:** Color-coded summary with pass/fail status for each check.
 
 ---
 
@@ -286,7 +293,12 @@ Polling utility used by Terraform. **Do not run manually.**
 
 #### get-ingress-lb.sh
 
-Retrieves ingress load balancer DNS. **Called automatically by Terraform.**
+Retrieves ingress load balancer ARN. **Called automatically by Terraform.**
+
+**Behavior:**
+- Returns LoadBalancer ARN when cluster exists
+- Returns dummy ARN when kubeconfig missing (for destroy)
+- Supports both NLB and classic ELB
 
 ---
 
@@ -343,16 +355,21 @@ source kms-key-result.env
 ./create-custom-ami.sh
 source custom-ami-result.env
 
-# 2. Update tfvars with AMI ID
+# 2. Configure Terraform
 cd ../terraform-openshift-v18/
-vi env/demo.tfvars
+cp env/demo.tfvars env/my-cluster.tfvars
+vi env/my-cluster.tfvars  # Update with your values
 
-# 3. Deploy
+# 3. Pre-install check
+./pre-install-checks.sh env/my-cluster.tfvars
+# Fix any conflicts listed
+
+# 4. Deploy
 terraform init
-terraform apply -var-file=env/demo.tfvars
+terraform apply -var-file=env/my-cluster.tfvars
 
-# 4. Verify
-./verify-cluster.sh
+# 5. Verify
+./verify-cluster.sh env/my-cluster.tfvars
 ```
 
 ### Reinstall Workflow
@@ -360,30 +377,54 @@ terraform apply -var-file=env/demo.tfvars
 ```bash
 cd terraform-openshift-v18/
 
-# Clean everything
-./full-cleanup.sh --with-aws-destroy
+# 1. Destroy existing cluster
+terraform destroy -var-file=env/my-cluster.tfvars
 
-# Reinstall
+# 2. Check for remaining resources
+./pre-install-checks.sh env/my-cluster.tfvars
+# Clean up any conflicts manually
+
+# 3. Reinstall
 terraform init
-terraform apply -var-file=env/demo.tfvars
+terraform apply -var-file=env/my-cluster.tfvars
+```
+
+### Manual Destroy Workflow
+
+```bash
+cd terraform-openshift-v18/
+
+# 1. Dry-run first
+./destroy-cluster.sh --dry-run
+
+# 2. Review what will be deleted
+
+# 3. Execute destroy
+./destroy-cluster.sh --auto-approve
+
+# 4. Verify cleanup
+./pre-install-checks.sh env/my-cluster.tfvars
 ```
 
 ### Troubleshooting
 
 ```bash
 # Check cluster health
-./verify-cluster.sh
+./verify-cluster.sh env/demo.tfvars
 
-# If terraform destroy fails
-./manual-cleanup.sh
+# Check for resource conflicts
+./pre-install-checks.sh env/demo.tfvars
 
-# If IAM resources stuck
-./force-delete-iam.sh
+# If terraform destroy fails, use manual destroy
+./destroy-cluster.sh --auto-approve
 
-# If roles exist from previous install
-./delete-roles.sh my-ocp-cluster
+# Check DNS creation logs
+cat output/private-dns.log
+
+# Check installer logs
+tail -f output/openshift-install.log
 ```
 
 ---
 
-**Last Updated:** January 26, 2026
+**Last Updated:** January 30, 2026

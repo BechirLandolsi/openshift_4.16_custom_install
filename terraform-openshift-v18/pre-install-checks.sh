@@ -18,9 +18,19 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Load configuration
-TFVARS_FILE="${1:-env/demo.tfvars}"
-if [[ ! -f "$TFVARS_FILE" ]]; then
-    echo -e "${RED}Error: $TFVARS_FILE not found${NC}"
+TFVARS_FILE="${1:-}"
+if [[ -z "$TFVARS_FILE" ]]; then
+    # Auto-detect tfvars file
+    for f in "env/demo.tfvars" "env/prod.tfvars" "env/staging.tfvars" "terraform.tfvars"; do
+        if [[ -f "$f" ]]; then
+            TFVARS_FILE="$f"
+            break
+        fi
+    done
+fi
+if [[ -z "$TFVARS_FILE" ]] || [[ ! -f "$TFVARS_FILE" ]]; then
+    echo -e "${RED}Error: No tfvars file found${NC}"
+    echo "Usage: $0 [tfvars-file]"
     exit 1
 fi
 

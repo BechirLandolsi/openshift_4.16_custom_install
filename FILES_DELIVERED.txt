@@ -225,64 +225,93 @@ SHELL SCRIPTS - CLUSTER LIFECYCLE
 --------------------------------------------------------------------------------
 
 terraform-openshift-v18/create-cluster.sh
-    Wrapper script for cluster creation
+    Wrapper script for cluster creation:
+    - Loads configuration from tfvars file
+    - Sets environment variables for custom installer
+    - Starts background DNS creation process
+    - Runs openshift-install create cluster
 
-terraform-openshift-v18/delete-cluster.sh
-    OpenShift cluster destruction
+terraform-openshift-v18/create-private-dns.sh
+    Background DNS record creation script:
+    - Runs during cluster installation
+    - Creates *.apps DNS record in private hosted zone
+    - Creates *.apps DNS record in public hosted zone
+    - Solves authentication operator deadlock issue
+    - Logs progress to output/private-dns.log
 
 terraform-openshift-v18/clean-cluster.sh
-    Cluster cleanup orchestration
+    Cluster cleanup orchestration (called by Terraform destroy):
+    - Fetches installer files from S3 if not local
+    - Calls destroy-cluster.sh for comprehensive cleanup
+    - Preserves local files (installer-files/, output/, tfstate)
 
 terraform-openshift-v18/save-cluster-states.sh
     Backup cluster state to S3
 
 --------------------------------------------------------------------------------
-SHELL SCRIPTS - CLEANUP & TROUBLESHOOTING
+SHELL SCRIPTS - DESTROY & CLEANUP
 --------------------------------------------------------------------------------
 
-terraform-openshift-v18/full-cleanup.sh
-    Comprehensive cleanup script (RECOMMENDED):
-    - Removes local Terraform state and cache
-    - Deletes OIDC roles (prevents trust policy mismatch)
-    - Removes DNS records
-    - Optional: terraform destroy
-    - Use: ./full-cleanup.sh --with-aws-destroy
+terraform-openshift-v18/destroy-cluster.sh
+    Comprehensive cluster destroy script:
+    - Runs openshift-install destroy cluster
+    - Deletes AWS resources by cluster tag and name
+    - 12 cleanup phases (EC2, ELB, ENI, IAM, DNS, S3, etc.)
+    - Supports dry-run mode (--dry-run)
+    - Auto-detect or specify tfvars file
+    - Preserves local files
+    - Use: ./destroy-cluster.sh --dry-run
+    - Use: ./destroy-cluster.sh --auto-approve
 
-terraform-openshift-v18/manual-cleanup.sh
-    Manual cleanup for stuck resources:
-    - Cleans up IAM roles and policies
-    - Empties and deletes S3 buckets
-    - Use when terraform destroy fails
+terraform-openshift-v18/destroy-cluster2.sh
+    Targeted destroy script (customer version):
+    - Runs openshift-install destroy cluster
+    - Deletes ONLY specific hardcoded resources:
+      * DNS records (api, api-int)
+      * OIDC IAM roles (6 roles)
+      * Terraform IAM roles (2 roles)
+      * Terraform IAM policies (2 policies)
+    - Preserves local files
+    - Use when precise control over deletion is needed
 
-terraform-openshift-v18/force-delete-iam.sh
-    Force delete IAM resources:
-    - Handles EntityAlreadyExists errors
-    - Detaches all policies before deletion
-    - Safe to run multiple times
+--------------------------------------------------------------------------------
+SHELL SCRIPTS - PRE-INSTALL & VERIFICATION
+--------------------------------------------------------------------------------
 
-terraform-openshift-v18/delete-roles.sh
-    Delete all ccoctl-created IAM roles
+terraform-openshift-v18/pre-install-checks.sh
+    Pre-installation conflict detection (READ-ONLY):
+    - Checks for existing DNS records (*.apps)
+    - Checks for existing S3 bucket
+    - Checks for existing DynamoDB table
+    - Checks for existing KMS alias
+    - Checks for local state files
+    - Lists conflicts and provides manual delete commands
+    - Does NOT delete anything automatically
+    - Run before terraform apply to avoid "already exists" errors
 
-terraform-openshift-v18/delete-record.sh
-    Route53 DNS record deletion utility
+terraform-openshift-v18/verify-cluster.sh
+    Cluster verification script:
+    - Checks cluster nodes status
+    - Verifies all cluster operators health
+    - Lists EC2 instances with cluster tag
+    - Validates IMDSv2 enforcement on all nodes
+    - Validates KMS encryption on all EBS volumes
+    - Checks AMI encryption status
+    - Verifies KMS key policy principals
+    - Displays comprehensive cluster health summary
 
 --------------------------------------------------------------------------------
 SHELL SCRIPTS - UTILITIES
 --------------------------------------------------------------------------------
 
 terraform-openshift-v18/get-ingress-lb.sh
-    Retrieves ingress load balancer information
+    Retrieves ingress load balancer information:
+    - Returns LoadBalancer ARN for Terraform
+    - Handles destroy scenario (returns dummy ARN)
+    - Supports both NLB and classic ELB
 
 terraform-openshift-v18/wait.sh
     Polling utility for resource readiness
-
-terraform-openshift-v18/verify-cluster.sh
-    Cluster verification script:
-    - Checks node status
-    - Verifies cluster operators
-    - Validates KMS encryption on all volumes
-    - Checks AMI encryption
-    - Displays cluster health summary
 
 --------------------------------------------------------------------------------
 CUSTOMER TAGS SIMULATION (OPTIONAL)
@@ -318,13 +347,13 @@ FILE COUNT SUMMARY
 Documentation:              7 files
 Configuration:              5 files
 Terraform Resources:       11 files
-Shell Scripts:             14 files
+Shell Scripts:             11 files
 Source Code (Go):           4 files
 Git/Editor Config:          4 files
 Customer Tags Simulation:   7 files
 Images:                     1 file
                           ---
-TOTAL:                     55 files
+TOTAL:                     50 files
 
 ================================================================================
 QUICK START WORKFLOW
@@ -345,21 +374,28 @@ QUICK START WORKFLOW
    cp env/demo.tfvars env/my-cluster.tfvars
    # Edit my-cluster.tfvars with your values
 
-4. DEPLOY CLUSTER:
+4. PRE-INSTALL CHECK (recommended):
+   ./pre-install-checks.sh env/my-cluster.tfvars
+   # Fix any conflicts listed before proceeding
+
+5. DEPLOY CLUSTER:
    terraform init
    terraform apply -var-file=env/my-cluster.tfvars
 
-5. VERIFY CLUSTER:
-   ./verify-cluster.sh
+6. VERIFY CLUSTER:
+   ./verify-cluster.sh env/my-cluster.tfvars
 
-6. CLEANUP (when needed):
-   ./full-cleanup.sh --with-aws-destroy
+7. DESTROY (when needed):
+   terraform destroy -var-file=env/my-cluster.tfvars
+   # Or for manual destroy:
+   ./destroy-cluster.sh --dry-run
+   ./destroy-cluster.sh --auto-approve
 
 ================================================================================
 VERSION INFORMATION
 ================================================================================
 
-Last Updated: 2026-01-26
+Last Updated: 2026-01-30
 Version: 4.16.9 (with KMS pre-encrypted AMI support)
 Compatibility: OpenShift 4.16.x, Terraform 1.5+, AWS Provider 5.0+
 
@@ -367,18 +403,23 @@ Key Features:
 - Pre-encrypted AMI workflow (avoids InvalidKMSKey errors)
 - Automatic KMS policy management via Terraform
 - DNS records in both public and private hosted zones
-- OIDC role cleanup in full-cleanup.sh
-- Comprehensive verification script
+- Background DNS creation during install (solves auth operator deadlock)
+- IMDSv2 enforcement verification
+- Comprehensive destroy with dry-run support
+- Pre-install conflict detection (read-only checks)
+- All parameters variabilized (no hardcoded values)
 
 ================================================================================
 IMPORTANT NOTES
 ================================================================================
 
 1. AMI MUST be pre-encrypted with the same KMS key used by the cluster
-2. Run full-cleanup.sh before re-installing to avoid OIDC trust issues
+2. Run pre-install-checks.sh before fresh installs to detect conflicts
 3. All shell scripts use Unix (LF) line endings
 4. ccoctl tool must be installed before running Terraform
 5. AWS credentials must be configured before deployment
 6. Pull secret must be downloaded from console.redhat.com
+7. All scripts require tfvars file (auto-detected or specified)
+8. terraform destroy preserves local files (installer-files/, output/, tfstate)
 
 ================================================================================

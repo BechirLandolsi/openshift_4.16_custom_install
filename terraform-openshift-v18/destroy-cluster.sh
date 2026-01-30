@@ -86,7 +86,7 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║           OpenShift Cluster Destroy                            ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo
-echo -e "${CYAN}Configuration (from env/demo.tfvars):${NC}"
+echo -e "${CYAN}Configuration (from ${TFVARS_FILE}):${NC}"
 echo "  Cluster Name:  $CLUSTER_NAME"
 echo "  Infra ID:      $INFRA_ID"
 echo "  Region:        $REGION"

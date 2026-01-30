@@ -10,7 +10,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Load cluster info from tfvars for DNS creation
-TFVARS_FILE="${TFVARS_FILE:-env/demo.tfvars}"
+# TFVARS_FILE should be set by Terraform or passed as environment variable
+if [[ -z "$TFVARS_FILE" ]]; then
+    # Auto-detect tfvars file
+    for f in "env/demo.tfvars" "env/prod.tfvars" "env/staging.tfvars" "terraform.tfvars"; do
+        if [[ -f "$f" ]]; then
+            TFVARS_FILE="$f"
+            break
+        fi
+    done
+fi
+
 if [[ -f "$TFVARS_FILE" ]]; then
     CLUSTER_NAME=$(grep '^cluster_name' "$TFVARS_FILE" | awk -F'"' '{print $2}')
     DOMAIN=$(grep '^domain' "$TFVARS_FILE" | awk -F'"' '{print $2}')
@@ -27,7 +37,7 @@ export ForceOpenshiftInfraIDRandomPart="${INFRA_RANDOM_ID}"
 if [[ -n "$CLUSTER_NAME" ]] && [[ -n "$DOMAIN" ]]; then
     echo "Starting background DNS creation for *.apps.${CLUSTER_NAME}.${DOMAIN}..."
     chmod +x create-private-dns.sh 2>/dev/null || true
-    nohup ./create-private-dns.sh "$CLUSTER_NAME" "$DOMAIN" "${REGION:-eu-west-3}" "${HOSTED_ZONE:-}" > /dev/null 2>&1 &
+    nohup ./create-private-dns.sh "$CLUSTER_NAME" "$DOMAIN" "$REGION" "${HOSTED_ZONE:-}" > /dev/null 2>&1 &
     echo "Background DNS process started (PID: $!)"
 fi
 

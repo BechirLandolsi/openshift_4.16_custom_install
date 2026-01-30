@@ -60,7 +60,7 @@ s3_bucket_name_oidc = "my-cluster-oidc-bucket"
 # DNS Configuration
 # ==============================================================================
 # Base domain for the cluster (e.g., example.com)
-# Cluster will be accessible at: api.my-ocp-cluster.example.com
+# Cluster will be accessible at: api.<cluster_name>.example.com
 domain = "your-domain.com"
 
 # Route53 Hosted Zone ID for the domain

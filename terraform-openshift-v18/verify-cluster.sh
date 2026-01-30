@@ -38,14 +38,23 @@ if [[ -f "$TFVARS_FILE" ]]; then
     REGION=$(grep '^region' "$TFVARS_FILE" | awk -F'"' '{print $2}')
     KMS_ALIAS=$(grep '^kms_ec2_alias' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 else
-    echo -e "${YELLOW}Warning: $TFVARS_FILE not found, using defaults${NC}"
+    echo -e "${RED}Error: $TFVARS_FILE not found${NC}"
+    echo "Usage: $0 [tfvars-file]"
+    exit 1
 fi
 
-# Defaults if not found
-CLUSTER_NAME="${CLUSTER_NAME:-my-ocp-cluster}"
-INFRA_RANDOM_ID="${INFRA_RANDOM_ID:-d44a5}"
-REGION="${REGION:-eu-west-3}"
-KMS_ALIAS="${KMS_ALIAS:-alias/ec2-ebs}"
+# Validate required variables (no hardcoded defaults)
+if [[ -z "$CLUSTER_NAME" ]]; then
+    echo -e "${RED}Error: cluster_name not found in tfvars${NC}"
+    echo "Usage: $0 [tfvars-file]"
+    exit 1
+fi
+if [[ -z "$REGION" ]]; then
+    echo -e "${RED}Error: region not found in tfvars${NC}"
+    exit 1
+fi
+INFRA_RANDOM_ID="${INFRA_RANDOM_ID:-}"
+KMS_ALIAS="${KMS_ALIAS:-}"
 
 # Build infra ID - if INFRA_RANDOM_ID already contains cluster name, use as-is
 if [[ "$INFRA_RANDOM_ID" == *"$CLUSTER_NAME"* ]]; then

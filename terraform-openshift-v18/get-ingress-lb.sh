@@ -14,9 +14,12 @@ KUBECONFIG="installer-files/auth/kubeconfig"
 
 # Check if kubeconfig exists - if not, return dummy value (for destroy)
 if [[ ! -f "$KUBECONFIG" ]]; then
-    # Get region and account for dummy ARN
-    REGION=$(aws configure get region 2>/dev/null || echo "eu-west-3")
-    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "000000000000")
+    # Get region and account for dummy ARN (from AWS CLI config)
+    REGION=$(aws configure get region 2>/dev/null)
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
+    # Use placeholder if AWS CLI not configured
+    REGION="${REGION:-us-east-1}"
+    ACCOUNT_ID="${ACCOUNT_ID:-000000000000}"
     # Return a dummy ARN for terraform destroy to proceed
     jq -n --arg region "$REGION" --arg account "$ACCOUNT_ID" \
         '{"LoadBalancerArn": "arn:aws:elasticloadbalancing:\($region):\($account):loadbalancer/net/dummy/0000000000000000"}'
@@ -53,7 +56,11 @@ REGION=$(echo "$INGRESS_HOST" | sed -n 's/.*\.\([a-z]*-[a-z]*-[0-9]*\)\.elb\.ama
 
 if [ -z "$REGION" ]; then
     # Try to get region from AWS config or environment
-    REGION=$(aws configure get region 2>/dev/null || echo "eu-west-3")
+    REGION=$(aws configure get region 2>/dev/null)
+    if [ -z "$REGION" ]; then
+        echo "Failed to determine AWS region from hostname or AWS config" >> $ERRORFILE
+        exit 1
+    fi
 fi
 
 # Try to find the load balancer ARN

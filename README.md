@@ -1940,7 +1940,7 @@ A comprehensive verification script is provided to check all aspects of the clus
 ```bash
 # Run the verification script
 cd terraform-openshift-v18/
-./verify-cluster.sh
+./verify-cluster.sh env/demo.tfvars
 ```
 
 The script checks:
@@ -2129,7 +2129,7 @@ aws s3 ls | grep ${CLUSTER_NAME}
 
 4. **Fresh Install After Destroy**: Run cleanup before new install:
    ```bash
-   ./pre-install-cleanup.sh env/demo.tfvars
+   ./pre-install-checks.sh env/demo.tfvars
    terraform apply -var-file=env/demo.tfvars
    ```
 

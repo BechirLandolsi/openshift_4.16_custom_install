@@ -13,12 +13,12 @@
 
 CLUSTER_NAME="${1:-}"
 DOMAIN="${2:-}"
-REGION="${3:-eu-west-3}"
+REGION="${3:-}"
 PUBLIC_ZONE_ID="${4:-}"
 
-if [[ -z "$CLUSTER_NAME" ]] || [[ -z "$DOMAIN" ]]; then
+if [[ -z "$CLUSTER_NAME" ]] || [[ -z "$DOMAIN" ]] || [[ -z "$REGION" ]]; then
     echo "[create-private-dns] Error: Missing arguments"
-    echo "Usage: $0 <cluster_name> <domain> [region] [public_zone_id]"
+    echo "Usage: $0 <cluster_name> <domain> <region> [public_zone_id]"
     exit 1
 fi
 
@@ -38,8 +38,8 @@ log "Will create: *.apps.${CLUSTER_NAME}.${DOMAIN}"
 log "Step 1: Looking for private hosted zone..."
 
 # The private zone could be either:
-# 1. cluster.domain (e.g., my-ocp-cluster.sandbox3458.opentlc.com) - created by installer
-# 2. domain only (e.g., sandbox3458.opentlc.com) - pre-existing shared zone
+# 1. cluster.domain (e.g., cluster-name.example.com) - created by installer
+# 2. domain only (e.g., example.com) - pre-existing shared zone
 
 PRIVATE_ZONE_ID=""
 PRIVATE_ZONE_NAME=""
