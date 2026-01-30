@@ -343,21 +343,14 @@ for policy in "${IAM_POLICIES[@]}"; do
 done
 
 # ==============================================================================
-# PHASE 5: Clean Local Files
+# NOTE: Local files are NOT deleted (installer-files/, output/, tfstate, etc.)
 # ==============================================================================
 echo
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}Phase 5: Clean Local Files${NC}"
+echo -e "${BLUE}Local Files${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-
-if [[ "$DRY_RUN" != "true" ]]; then
-    rm -rf installer-files 2>/dev/null || true
-    rm -f installer-files.tar 2>/dev/null || true
-    rm -rf output/*.log 2>/dev/null || true
-    echo -e "${GREEN}✓ Local files cleaned${NC}"
-else
-    echo -e "${YELLOW}[DRY-RUN] Would clean: installer-files/, installer-files.tar, output/*.log${NC}"
-fi
+echo -e "${GREEN}✓ Local files preserved (installer-files/, output/, terraform.tfstate)${NC}"
+echo -e "${YELLOW}  To delete manually if needed: rm -rf installer-files/ output/${NC}"
 
 # ==============================================================================
 # Summary

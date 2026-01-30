@@ -593,21 +593,14 @@ fi
 echo -e "${YELLOW}Note: KMS keys are NOT deleted (they may be shared). Delete manually if needed.${NC}"
 
 # ==============================================================================
-# PHASE 13: Clean Local Files
+# NOTE: Local files are NOT deleted (installer-files/, output/, tfstate, etc.)
 # ==============================================================================
 echo
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}Phase 13: Clean Local Files${NC}"
+echo -e "${BLUE}Local Files${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-
-if [[ "$DRY_RUN" != "true" ]]; then
-    rm -rf installer-files/ output/ init_setup/ .terraform/ 2>/dev/null || true
-    rm -f terraform.tfstate terraform.tfstate.backup .terraform.lock.hcl 2>/dev/null || true
-    rm -f *.log tfplan kms-policy.json dns-*.json trust-policy*.json 2>/dev/null || true
-    echo -e "${GREEN}✓ Local files cleaned${NC}"
-else
-    echo -e "${YELLOW}[DRY-RUN] Would delete: installer-files/, output/, .terraform/, terraform.tfstate*${NC}"
-fi
+echo -e "${GREEN}✓ Local files preserved (installer-files/, output/, terraform.tfstate)${NC}"
+echo -e "${YELLOW}  To delete manually if needed: rm -rf installer-files/ output/${NC}"
 
 # ==============================================================================
 # SUMMARY

@@ -60,54 +60,31 @@ data "external" "get_ingress_lb" {
   program = ["bash", "get-ingress-lb.sh"]
 }
 
-data "aws_lb" "ingress" {
-  arn = data.external.get_ingress_lb.result.LoadBalancerArn 
-}
+# NOTE: DNS records are created by create-private-dns.sh during install
+# This is necessary because authentication operator needs DNS BEFORE install completes
+# The script creates *.apps record in the private zone for internal resolution
 
-### DNS ROUTE - PUBLIC HOSTED ZONE (for external access)
-resource "aws_route53_record" "ingress_dns_route" {
-  zone_id = var.hosted_zone
-  name    = join(".", ["*.apps", var.cluster_name, var.domain])
-  type    = "A"
-
-  alias {
-    name                   = data.aws_lb.ingress.dns_name
-    zone_id                = data.aws_lb.ingress.zone_id
-    evaluate_target_health = true
-  }
-}
-
-### DNS ROUTE - PRIVATE HOSTED ZONE (for internal cluster DNS resolution)
-# The OpenShift installer creates a private hosted zone for internal DNS
-# We MUST add the *.apps record there so pods can resolve oauth, console, etc.
-data "aws_route53_zone" "private" {
-  name         = "${var.cluster_name}.${var.domain}."
-  private_zone = true
-
-  depends_on = [null_resource.openshift_install]
-}
-
-resource "aws_route53_record" "ingress_dns_route_private" {
-  zone_id = data.aws_route53_zone.private.zone_id
-  name    = join(".", ["*.apps", var.cluster_name, var.domain])
-  type    = "CNAME"
-  ttl     = 300
-  records = [data.aws_lb.ingress.dns_name]
-}
-
-# Wait for DNS to propagate before checking cluster health
+# Wait for DNS to be created by the background script
 resource "null_resource" "wait_for_dns" {
-  depends_on = [
-    aws_route53_record.ingress_dns_route,
-    aws_route53_record.ingress_dns_route_private
-  ]
+  depends_on = [null_resource.openshift_ready]
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<EOT
-        echo "Waiting for DNS propagation (60 seconds)..."
-        sleep 60
-        echo "DNS records created. Verifying cluster operators..."
+        echo "Waiting for DNS record creation (by background script)..."
+        for i in {1..30}; do
+            if grep -q "Successfully created" output/private-dns.log 2>/dev/null; then
+                echo "✓ DNS record created by background script"
+                break
+            fi
+            if grep -q "Record already exists" output/private-dns.log 2>/dev/null; then
+                echo "✓ DNS record already exists"
+                break
+            fi
+            echo "  Waiting for DNS... (attempt $i/30)"
+            sleep 10
+        done
+        echo "DNS setup complete."
     EOT
   }
 }

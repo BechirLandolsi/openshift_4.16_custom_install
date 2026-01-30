@@ -14,10 +14,11 @@
 CLUSTER_NAME="${1:-}"
 DOMAIN="${2:-}"
 REGION="${3:-eu-west-3}"
+PUBLIC_ZONE_ID="${4:-}"
 
 if [[ -z "$CLUSTER_NAME" ]] || [[ -z "$DOMAIN" ]]; then
     echo "[create-private-dns] Error: Missing arguments"
-    echo "Usage: $0 <cluster_name> <domain> [region]"
+    echo "Usage: $0 <cluster_name> <domain> [region] [public_zone_id]"
     exit 1
 fi
 
@@ -32,19 +33,37 @@ log "Starting private DNS record creation for ${CLUSTER_NAME}.${DOMAIN}"
 log "Will create: *.apps.${CLUSTER_NAME}.${DOMAIN}"
 
 # ==============================================================================
-# Step 1: Wait for private hosted zone to exist
+# Step 1: Find the private hosted zone
 # ==============================================================================
-log "Step 1: Waiting for private hosted zone..."
+log "Step 1: Looking for private hosted zone..."
+
+# The private zone could be either:
+# 1. cluster.domain (e.g., my-ocp-cluster.sandbox3458.opentlc.com) - created by installer
+# 2. domain only (e.g., sandbox3458.opentlc.com) - pre-existing shared zone
 
 PRIVATE_ZONE_ID=""
+PRIVATE_ZONE_NAME=""
+
 for i in {1..60}; do
-    PRIVATE_ZONE_ID=$(aws route53 list-hosted-zones-by-name \
-        --dns-name "${CLUSTER_NAME}.${DOMAIN}." \
+    # First try: cluster.domain (installer-created zone)
+    PRIVATE_ZONE_ID=$(aws route53 list-hosted-zones \
         --query "HostedZones[?Config.PrivateZone==\`true\` && Name=='${CLUSTER_NAME}.${DOMAIN}.'].Id" \
         --output text 2>/dev/null | head -1 | sed 's|/hostedzone/||')
     
     if [[ -n "$PRIVATE_ZONE_ID" ]] && [[ "$PRIVATE_ZONE_ID" != "None" ]]; then
-        log "✓ Found private hosted zone: $PRIVATE_ZONE_ID"
+        PRIVATE_ZONE_NAME="${CLUSTER_NAME}.${DOMAIN}"
+        log "✓ Found cluster-specific private zone: $PRIVATE_ZONE_ID ($PRIVATE_ZONE_NAME)"
+        break
+    fi
+    
+    # Second try: domain only (shared private zone)
+    PRIVATE_ZONE_ID=$(aws route53 list-hosted-zones \
+        --query "HostedZones[?Config.PrivateZone==\`true\` && Name=='${DOMAIN}.'].Id" \
+        --output text 2>/dev/null | head -1 | sed 's|/hostedzone/||')
+    
+    if [[ -n "$PRIVATE_ZONE_ID" ]] && [[ "$PRIVATE_ZONE_ID" != "None" ]]; then
+        PRIVATE_ZONE_NAME="${DOMAIN}"
+        log "✓ Found domain-level private zone: $PRIVATE_ZONE_ID ($PRIVATE_ZONE_NAME)"
         break
     fi
     
@@ -54,6 +73,7 @@ done
 
 if [[ -z "$PRIVATE_ZONE_ID" ]] || [[ "$PRIVATE_ZONE_ID" == "None" ]]; then
     log "✗ Private hosted zone not found after 10 minutes"
+    log "  Looked for: ${CLUSTER_NAME}.${DOMAIN} or ${DOMAIN}"
     exit 1
 fi
 
@@ -133,11 +153,41 @@ RESULT=$(aws route53 change-resource-record-sets \
     --region "$REGION" 2>&1)
 
 if [[ $? -eq 0 ]]; then
-    log "✓ Successfully created *.apps.${CLUSTER_NAME}.${DOMAIN} -> ${LB_HOSTNAME}"
+    log "✓ Successfully created *.apps.${CLUSTER_NAME}.${DOMAIN} -> ${LB_HOSTNAME} (PRIVATE ZONE)"
     log "  Change info: $(echo "$RESULT" | jq -r '.ChangeInfo.Id // "N/A"')"
 else
-    log "✗ Failed to create DNS record: $RESULT"
-    exit 1
+    log "✗ Failed to create private zone DNS record: $RESULT"
+    # Continue anyway to try public zone
 fi
 
-log "Private DNS record creation complete!"
+# ==============================================================================
+# Step 5: Create *.apps record in PUBLIC zone (for external access)
+# ==============================================================================
+if [[ -n "$PUBLIC_ZONE_ID" ]]; then
+    log "Step 5: Creating *.apps CNAME record in PUBLIC zone..."
+    
+    # Check if record already exists in public zone
+    EXISTING_PUBLIC=$(aws route53 list-resource-record-sets \
+        --hosted-zone-id "$PUBLIC_ZONE_ID" \
+        --query "ResourceRecordSets[?Name=='${RECORD_NAME}'].Name" \
+        --output text 2>/dev/null)
+    
+    if [[ -n "$EXISTING_PUBLIC" ]] && [[ "$EXISTING_PUBLIC" != "None" ]]; then
+        log "✓ Record already exists in public zone, skipping"
+    else
+        RESULT_PUBLIC=$(aws route53 change-resource-record-sets \
+            --hosted-zone-id "$PUBLIC_ZONE_ID" \
+            --change-batch "$CHANGE_BATCH" \
+            --region "$REGION" 2>&1)
+        
+        if [[ $? -eq 0 ]]; then
+            log "✓ Successfully created *.apps.${CLUSTER_NAME}.${DOMAIN} -> ${LB_HOSTNAME} (PUBLIC ZONE)"
+        else
+            log "⚠ Failed to create public zone DNS record (may already exist as different type): $RESULT_PUBLIC"
+        fi
+    fi
+else
+    log "Step 5: Skipping public zone (no PUBLIC_ZONE_ID provided)"
+fi
+
+log "DNS record creation complete!"

@@ -15,18 +15,19 @@ if [[ -f "$TFVARS_FILE" ]]; then
     CLUSTER_NAME=$(grep '^cluster_name' "$TFVARS_FILE" | awk -F'"' '{print $2}')
     DOMAIN=$(grep '^domain' "$TFVARS_FILE" | awk -F'"' '{print $2}')
     REGION=$(grep '^region' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    HOSTED_ZONE=$(grep '^hosted_zone' "$TFVARS_FILE" | awk -F'"' '{print $2}')
 fi
 
 # Set environment variables for custom installer
 export IgnoreErrorsOnSharedTags=On
 export ForceOpenshiftInfraIDRandomPart="${INFRA_RANDOM_ID}"
 
-# Start background process to create private DNS record
+# Start background process to create DNS records (private and public zones)
 # This solves the authentication operator deadlock
 if [[ -n "$CLUSTER_NAME" ]] && [[ -n "$DOMAIN" ]]; then
     echo "Starting background DNS creation for *.apps.${CLUSTER_NAME}.${DOMAIN}..."
     chmod +x create-private-dns.sh 2>/dev/null || true
-    nohup ./create-private-dns.sh "$CLUSTER_NAME" "$DOMAIN" "${REGION:-eu-west-3}" > /dev/null 2>&1 &
+    nohup ./create-private-dns.sh "$CLUSTER_NAME" "$DOMAIN" "${REGION:-eu-west-3}" "${HOSTED_ZONE:-}" > /dev/null 2>&1 &
     echo "Background DNS process started (PID: $!)"
 fi
 

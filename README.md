@@ -25,9 +25,10 @@
 6. [Part 2: Building the Custom OpenShift Installer](#part-2-building-the-custom-openshift-installer)
 7. [Part 3: Terraform Configuration](#part-3-terraform-configuration)
 8. [Part 4: Step-by-Step Installation](#part-4-step-by-step-installation)
-9. [Part 5: Disconnected Installation](#part-5-disconnected-installation)
-10. [Troubleshooting](#troubleshooting)
-11. [Appendix](#appendix)
+9. [Cluster Destroy Process](#cluster-destroy-process)
+10. [Part 5: Disconnected Installation](#part-5-disconnected-installation)
+11. [Troubleshooting](#troubleshooting)
+12. [Appendix](#appendix)
 
 ---
 
@@ -1752,7 +1753,56 @@ curl -L https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.16.9/
 
 ---
 
-### Step 4.4: Apply Terraform Configuration
+### Step 4.4: Pre-Install Check (Recommended)
+
+Before running `terraform apply`, run the pre-install check to identify any conflicting resources that could cause "already exists" errors:
+
+```bash
+cd terraform-openshift-v18/
+
+# Run pre-install check (read-only - does not delete anything)
+./pre-install-checks.sh env/demo.tfvars
+```
+
+**What it checks:**
+
+| Resource | Why it matters |
+|----------|----------------|
+| DNS Records (`*.apps.cluster.domain`) | Will cause "InvalidChangeBatch" error |
+| S3 Bucket (`cluster-infra-terraform-remote-state-storage-s3`) | Will cause "BucketAlreadyOwnedByYou" error |
+| DynamoDB Table (`cluster-terraform-locks`) | Will cause "ResourceInUseException" error |
+| KMS Alias (`alias/s3-terraform-state-cluster`) | Will cause "AlreadyExistsException" error |
+| Local Files (`installer-files/`, `terraform.tfstate`) | May cause state conflicts |
+
+**If no conflicts found:**
+
+```
+╔════════════════════════════════════════════════════════════════╗
+║  ✓ No conflicts found - Ready for fresh install!              ║
+╚════════════════════════════════════════════════════════════════╝
+```
+
+**If conflicts found:**
+
+```
+╔════════════════════════════════════════════════════════════════╗
+║  ✗ 2 conflict(s) found - Delete before install                ║
+╚════════════════════════════════════════════════════════════════╝
+
+Resources to delete:
+  S3: my-ocp-cluster-d44a5-terraform-remote-state-storage-s3
+  DynamoDB: my-ocp-cluster-terraform-locks
+
+Commands to delete (run manually if needed):
+aws s3 rb s3://my-ocp-cluster-d44a5-terraform-remote-state-storage-s3 --force --region eu-west-3
+aws dynamodb delete-table --table-name my-ocp-cluster-terraform-locks --region eu-west-3
+```
+
+The script provides the exact commands to delete each conflicting resource. Run them manually if you want to proceed with a fresh install.
+
+---
+
+### Step 4.5: Apply Terraform Configuration
 
 ```bash
 # Apply the plan
@@ -1771,7 +1821,7 @@ terraform apply tfplan
 # Monitor progress in output/openshift-install.log
 ```
 
-### Step 4.5: Monitor Installation Progress
+### Step 4.6: Monitor Installation Progress
 
 Open a new terminal and watch the installation logs:
 
@@ -1788,7 +1838,7 @@ tail -f output/openshift-install.log
 # 4. "Install complete!"
 ```
 
-### Step 4.6: Verify Installation
+### Step 4.7: Verify Installation
 
 Once Terraform completes successfully:
 
@@ -1827,7 +1877,7 @@ oc whoami --show-console
 cat installer-files/auth/kubeadmin-password
 ```
 
-### Step 4.7: Access the Cluster
+### Step 4.8: Access the Cluster
 
 ```bash
 # Web Console
@@ -1840,7 +1890,7 @@ oc login -u kubeadmin -p "$(cat installer-files/auth/kubeadmin-password)" \
   "https://api.${CLUSTER_NAME}.${DOMAIN}:6443"
 ```
 
-### Step 4.8: Verify Custom AMI Usage
+### Step 4.9: Verify Custom AMI Usage
 
 ```bash
 # Check that nodes are using the custom AMI
@@ -1857,7 +1907,7 @@ aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0
 # Should match your custom AMI: ami-0abcdef1234567890
 ```
 
-### Step 4.9: Verify IMDSv2 Configuration
+### Step 4.10: Verify IMDSv2 Configuration
 
 ```bash
 # Check that all instances have IMDSv2 enforced
@@ -1871,7 +1921,7 @@ aws ec2 describe-instances \
 # All instances should show "required" for HttpTokens
 ```
 
-### Step 4.10: Verify KMS Encryption
+### Step 4.11: Verify KMS Encryption
 
 ```bash
 # Check EBS volumes are encrypted with correct KMS key
@@ -1883,7 +1933,7 @@ aws ec2 describe-volumes \
 # All volumes should show Encrypted=true with your KMS key ARN
 ```
 
-### Step 4.11: Run Full Cluster Verification (Recommended)
+### Step 4.12: Run Full Cluster Verification (Recommended)
 
 A comprehensive verification script is provided to check all aspects of the cluster:
 
@@ -1912,6 +1962,176 @@ The script checks:
 ✓ All volumes are encrypted with the correct CMK
 ✓ AMI is encrypted with the correct CMK
 ```
+
+---
+
+## Cluster Destroy Process
+
+This section documents how to properly destroy the OpenShift cluster and clean up all AWS resources.
+
+### Destroy Methods
+
+There are two ways to destroy the cluster:
+
+| Method | Command | Use Case |
+|--------|---------|----------|
+| **Terraform Destroy** | `terraform destroy -var-file=env/demo.tfvars` | Recommended - uses Terraform state |
+| **Manual Script** | `./destroy-cluster.sh --dry-run` | When Terraform state is lost |
+
+### What Happens During `terraform destroy`
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    TERRAFORM DESTROY FLOW                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Terraform reads state (terraform.tfstate)                    │
+│    → Identifies all resources it created                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 2. Triggers: clean-cluster.sh                                   │
+│    → Fetches installer-files from S3 (if not local)            │
+│    → Calls: ./destroy-cluster.sh --auto-approve                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 3. destroy-cluster.sh runs (12 phases)                          │
+│                                                                  │
+│    Phase 1:  openshift-install destroy cluster                   │
+│              (SkipDestroyingSharedTags=On)                      │
+│              → Deletes EC2, LBs, SGs created by installer       │
+│                                                                  │
+│    Phase 2:  Delete remaining EC2 instances (by cluster tag)    │
+│    Phase 3:  Delete Load Balancers (by cluster name)            │
+│    Phase 4:  Delete Target Groups                                │
+│    Phase 5:  Delete Security Groups                              │
+│    Phase 6:  Delete Route53 DNS Records                          │
+│    Phase 7:  Delete IAM Roles (containing cluster name)          │
+│    Phase 8:  Delete IAM Policies (containing cluster name)       │
+│    Phase 9:  Delete OIDC Provider                                │
+│    Phase 10: Delete S3 Buckets (containing cluster name)         │
+│    Phase 11: Delete DynamoDB Table                               │
+│    Phase 12: Delete KMS Aliases (NOT keys)                       │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 4. Terraform deletes its managed resources                       │
+│    → S3 bucket, DynamoDB table, KMS alias, local files          │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 5. DESTROY COMPLETE                                              │
+│    → Local files preserved (installer-files/, output/, tfstate) │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Resources Deleted vs Preserved
+
+| Resource Type | Deleted | Filter Used |
+|---------------|---------|-------------|
+| EC2 Instances | ✓ | Cluster tag: `kubernetes.io/cluster/<infra-id>=owned` |
+| Load Balancers (NLB/ALB/Classic) | ✓ | Name contains `${cluster_name}` |
+| Target Groups | ✓ | Name contains `${cluster_name}` |
+| Security Groups | ✓ | Cluster tag |
+| Route53 DNS Records | ✓ | `api.`, `api-int.`, `*.apps.` |
+| IAM Roles | ✓ | Name contains `${cluster_name}` |
+| IAM Policies | ✓ | Name contains `${cluster_name}` |
+| Instance Profiles | ✓ | Name contains `${cluster_name}` |
+| OIDC Provider | ✓ | URL contains `${cluster_name}` |
+| S3 Buckets | ✓ | Name contains `${cluster_name}` |
+| DynamoDB Table | ✓ | `${cluster_name}-terraform-locks` |
+| KMS Aliases | ✓ | Name contains `${cluster_name}` |
+| **KMS Keys** | **✗** | Not deleted (may be shared) |
+| **VPC/Subnets** | **✗** | Not deleted (shared infrastructure) |
+| **Local Files** | **✗** | Preserved on VM |
+
+### Destroy Commands
+
+**1. Preview what will be destroyed (dry-run):**
+
+```bash
+./destroy-cluster.sh --dry-run
+```
+
+**2. Terraform destroy (recommended):**
+
+```bash
+# Preview with terraform plan
+terraform plan -destroy -var-file=env/demo.tfvars
+
+# Execute destroy
+terraform destroy -var-file=env/demo.tfvars
+```
+
+**3. Manual destroy (if Terraform state is lost):**
+
+```bash
+# With confirmation prompt
+./destroy-cluster.sh
+
+# Auto-approve (no prompt)
+./destroy-cluster.sh --auto-approve
+
+# Specify different tfvars file
+./destroy-cluster.sh --var-file=env/prod.tfvars
+```
+
+### Customer-Specific Destroy Script
+
+For customers with specific resource naming, use `destroy-cluster2.sh`:
+
+```bash
+# This script deletes ONLY these specific resources:
+# - DNS: api.${cluster}.${domain}, api-int.${cluster}.${domain}
+# - IAM Roles: 6 OIDC roles + 2 Terraform roles
+# - IAM Policies: 2 Terraform policies
+
+./destroy-cluster2.sh --dry-run
+./destroy-cluster2.sh --auto-approve
+```
+
+### Post-Destroy Verification
+
+After destroy completes, verify cleanup:
+
+```bash
+# Check for remaining EC2 instances
+aws ec2 describe-instances \
+  --filters "Name=tag:kubernetes.io/cluster/${INFRA_ID},Values=owned" \
+  --query 'Reservations[*].Instances[*].InstanceId' \
+  --region eu-west-3
+
+# Check for remaining IAM roles
+aws iam list-roles \
+  --query "Roles[?contains(RoleName, '${CLUSTER_NAME}')].RoleName"
+
+# Check for remaining S3 buckets
+aws s3 ls | grep ${CLUSTER_NAME}
+```
+
+### Important Notes
+
+1. **Shared Resources Protected**: VPC, subnets, and other shared infrastructure are NOT deleted (`SkipDestroyingSharedTags=On`)
+
+2. **KMS Keys Not Deleted**: KMS keys are not deleted as they may be shared. Delete manually if needed:
+   ```bash
+   aws kms schedule-key-deletion --key-id <KEY_ID> --pending-window-in-days 7
+   ```
+
+3. **Local Files Preserved**: `installer-files/`, `output/`, and `terraform.tfstate` are kept for reference
+
+4. **Fresh Install After Destroy**: Run cleanup before new install:
+   ```bash
+   ./pre-install-cleanup.sh env/demo.tfvars
+   terraform apply -var-file=env/demo.tfvars
+   ```
 
 ---
 

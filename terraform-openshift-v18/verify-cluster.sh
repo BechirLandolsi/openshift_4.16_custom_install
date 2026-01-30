@@ -1,15 +1,17 @@
 #!/bin/bash
 # ==============================================================================
-# Verify Cluster Script - Check cluster tags, KMS encryption, and health
+# Verify Cluster Script - Check cluster security and health
 # ==============================================================================
 # This script verifies:
-# 1. Cluster tag on all resources
-# 2. KMS encryption on EBS volumes
-# 3. AMI encryption status
-# 4. Cluster operators health
-# 5. Node status
+# 1. Cluster Nodes status
+# 2. Cluster Operators health
+# 3. EC2 Instances with Cluster Tag
+# 4. IMDSv2 Enforcement on all nodes
+# 5. KMS Encryption on EBS volumes
+# 6. AMI Encryption status
+# 7. KMS Key Policy principals
 #
-# Usage: ./verify-cluster.sh
+# Usage: ./verify-cluster.sh [tfvars-file]
 # ==============================================================================
 
 set -e
@@ -24,13 +26,19 @@ NC='\033[0m'
 
 # Configuration - Auto-detect or set manually
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Accept tfvars file as argument
+TFVARS_FILE="${1:-env/demo.tfvars}"
 
 # Try to get values from tfvars
-if [[ -f "$SCRIPT_DIR/env/demo.tfvars" ]]; then
-    CLUSTER_NAME=$(grep '^cluster_name' "$SCRIPT_DIR/env/demo.tfvars" | awk -F'"' '{print $2}')
-    INFRA_RANDOM_ID=$(grep '^infra_random_id' "$SCRIPT_DIR/env/demo.tfvars" | awk -F'"' '{print $2}' | cut -d'-' -f2)
-    REGION=$(grep '^region' "$SCRIPT_DIR/env/demo.tfvars" | awk -F'"' '{print $2}')
-    KMS_ALIAS=$(grep '^kms_ec2_alias' "$SCRIPT_DIR/env/demo.tfvars" | awk -F'"' '{print $2}')
+if [[ -f "$TFVARS_FILE" ]]; then
+    CLUSTER_NAME=$(grep '^cluster_name' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    INFRA_RANDOM_ID=$(grep '^infra_random_id' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    REGION=$(grep '^region' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+    KMS_ALIAS=$(grep '^kms_ec2_alias' "$TFVARS_FILE" | awk -F'"' '{print $2}')
+else
+    echo -e "${YELLOW}Warning: $TFVARS_FILE not found, using defaults${NC}"
 fi
 
 # Defaults if not found
@@ -39,7 +47,14 @@ INFRA_RANDOM_ID="${INFRA_RANDOM_ID:-d44a5}"
 REGION="${REGION:-eu-west-3}"
 KMS_ALIAS="${KMS_ALIAS:-alias/ec2-ebs}"
 
-CLUSTER_TAG="kubernetes.io/cluster/${CLUSTER_NAME}-${INFRA_RANDOM_ID}"
+# Build infra ID - if INFRA_RANDOM_ID already contains cluster name, use as-is
+if [[ "$INFRA_RANDOM_ID" == *"$CLUSTER_NAME"* ]]; then
+    INFRA_ID="$INFRA_RANDOM_ID"
+else
+    INFRA_ID="${CLUSTER_NAME}-${INFRA_RANDOM_ID}"
+fi
+
+CLUSTER_TAG="kubernetes.io/cluster/${INFRA_ID}"
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║           OpenShift Cluster Verification                       ║${NC}"
@@ -47,10 +62,11 @@ echo -e "${BLUE}╚════════════════════�
 echo
 echo -e "${CYAN}Configuration:${NC}"
 echo "  Cluster Name:    $CLUSTER_NAME"
-echo "  Infra ID:        ${CLUSTER_NAME}-${INFRA_RANDOM_ID}"
+echo "  Infra ID:        $INFRA_ID"
 echo "  Region:          $REGION"
 echo "  Cluster Tag:     $CLUSTER_TAG"
 echo "  KMS Alias:       $KMS_ALIAS"
+echo "  TFVars File:     $TFVARS_FILE"
 echo
 
 # === 1. Cluster Nodes ===
@@ -97,26 +113,89 @@ else
 fi
 echo
 
-# === 3. EC2 Instances with Cluster Tag ===
+# === 3. EC2 Instances ===
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}3. EC2 Instances (Cluster Tag Verification)${NC}"
+echo -e "${BLUE}3. EC2 Instances (Cluster Name: ${CLUSTER_NAME})${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+
+# Search by name pattern (more reliable)
 aws ec2 describe-instances \
-    --filters "Name=tag:${CLUSTER_TAG},Values=owned" "Name=instance-state-name,Values=running" \
-    --query 'Reservations[*].Instances[*].[InstanceId,InstanceType,PrivateIpAddress,Tags[?Key==`Name`].Value|[0]]' \
+    --filters "Name=instance-state-name,Values=running" \
+    --query "Reservations[*].Instances[?Tags[?Key=='Name' && contains(Value, '${CLUSTER_NAME}')]].[InstanceId,InstanceType,PrivateIpAddress,Tags[?Key=='Name'].Value|[0]]" \
     --output table --region "$REGION" 2>/dev/null || echo -e "${YELLOW}⚠ Could not query EC2 instances${NC}"
 
 INSTANCE_COUNT=$(aws ec2 describe-instances \
-    --filters "Name=tag:${CLUSTER_TAG},Values=owned" "Name=instance-state-name,Values=running" \
-    --query 'Reservations[*].Instances[*].InstanceId' \
+    --filters "Name=instance-state-name,Values=running" \
+    --query "Reservations[*].Instances[?Tags[?Key=='Name' && contains(Value, '${CLUSTER_NAME}')]].InstanceId" \
     --output text --region "$REGION" 2>/dev/null | wc -w)
 echo
-echo -e "Running instances with cluster tag: $INSTANCE_COUNT"
+echo -e "Running instances with '${CLUSTER_NAME}' in name: $INSTANCE_COUNT"
 echo
 
-# === 4. KMS Encryption on EBS Volumes ===
+# === 4. IMDSv2 Enforcement Check ===
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}4. KMS Encryption on EBS Volumes${NC}"
+echo -e "${BLUE}4. IMDSv2 Enforcement on All Nodes${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+
+# Get all running instances with cluster name in their Name tag
+IMDS_DATA=$(aws ec2 describe-instances \
+    --filters "Name=instance-state-name,Values=running" \
+    --query "Reservations[*].Instances[?Tags[?Key=='Name' && contains(Value, '${CLUSTER_NAME}')]].[InstanceId,Tags[?Key=='Name'].Value|[0],MetadataOptions.HttpTokens]" \
+    --output text --region "$REGION" 2>/dev/null | grep -v "^$")
+
+if [[ -n "$IMDS_DATA" ]]; then
+    TOTAL_INSTANCES=0
+    IMDSV2_ENFORCED=0
+    IMDSV2_OPTIONAL=0
+    
+    echo "Instance ID          | Name                                      | IMDSv2"
+    echo "---------------------|-------------------------------------------|----------"
+    
+    while IFS=$'\t' read -r instance_id instance_name http_tokens; do
+        [[ -z "$instance_id" ]] && continue
+        ((TOTAL_INSTANCES++))
+        
+        # Truncate name if too long
+        DISPLAY_NAME="${instance_name:0:41}"
+        
+        if [[ "$http_tokens" == "required" ]]; then
+            ((IMDSV2_ENFORCED++))
+            STATUS="${GREEN}required${NC}"
+        else
+            ((IMDSV2_OPTIONAL++))
+            STATUS="${RED}optional${NC}"
+        fi
+        
+        printf "%-20s | %-41s | %b\n" "$instance_id" "$DISPLAY_NAME" "$STATUS"
+    done <<< "$IMDS_DATA"
+    
+    echo
+    echo "Total Instances: $TOTAL_INSTANCES"
+    echo "IMDSv2 Enforced (required): $IMDSV2_ENFORCED"
+    echo "IMDSv2 Optional: $IMDSV2_OPTIONAL"
+    echo
+    
+    if [[ "$TOTAL_INSTANCES" -eq "$IMDSV2_ENFORCED" ]]; then
+        echo -e "${GREEN}✓ All nodes have IMDSv2 enforced (HttpTokens=required)${NC}"
+    else
+        echo -e "${RED}✗ WARNING: $IMDSV2_OPTIONAL node(s) do NOT have IMDSv2 enforced!${NC}"
+        echo -e "${YELLOW}  Recommendation: Update MetadataOptions.HttpTokens to 'required' for security${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ No instances found with '${CLUSTER_NAME}' in name${NC}"
+    echo "  Trying alternative search by cluster tag..."
+    
+    # Fallback: try by tag
+    aws ec2 describe-instances \
+        --filters "Name=tag:${CLUSTER_TAG},Values=owned" "Name=instance-state-name,Values=running" \
+        --query 'Reservations[*].Instances[*].[InstanceId,Tags[?Key==`Name`].Value|[0],MetadataOptions.HttpTokens]' \
+        --output table --region "$REGION" 2>/dev/null || echo -e "${YELLOW}⚠ Could not query instances${NC}"
+fi
+echo
+
+# === 5. KMS Encryption on EBS Volumes ===
+echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}5. KMS Encryption on EBS Volumes${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
 # Get expected KMS key ARN
@@ -125,11 +204,21 @@ EXPECTED_KMS_ARN=$(aws kms describe-key --key-id "$KMS_ALIAS" --region "$REGION"
 echo "Expected KMS Key: $EXPECTED_KMS_ARN"
 echo
 
-# Check all volumes
-VOLUMES=$(aws ec2 describe-volumes \
-    --filters "Name=tag:${CLUSTER_TAG},Values=owned" \
-    --query 'Volumes[*].[VolumeId,Encrypted,KmsKeyId]' \
+# Get instance IDs for this cluster
+CLUSTER_INSTANCE_IDS=$(aws ec2 describe-instances \
+    --filters "Name=instance-state-name,Values=running" \
+    --query "Reservations[*].Instances[?Tags[?Key=='Name' && contains(Value, '${CLUSTER_NAME}')]].InstanceId" \
     --output text --region "$REGION" 2>/dev/null)
+
+# Get volumes attached to cluster instances
+VOLUMES=""
+for iid in $CLUSTER_INSTANCE_IDS; do
+    VOL_DATA=$(aws ec2 describe-volumes \
+        --filters "Name=attachment.instance-id,Values=$iid" \
+        --query 'Volumes[*].[VolumeId,Encrypted,KmsKeyId]' \
+        --output text --region "$REGION" 2>/dev/null)
+    VOLUMES="${VOLUMES}${VOL_DATA}"$'\n'
+done
 
 if [[ -n "$VOLUMES" ]]; then
     TOTAL_VOLS=0
@@ -163,9 +252,9 @@ else
 fi
 echo
 
-# === 5. AMI Encryption Status ===
+# === 6. AMI Encryption Status ===
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}5. AMI Encryption Status${NC}"
+echo -e "${BLUE}6. AMI Encryption Status${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
 if command -v oc &> /dev/null && oc whoami &> /dev/null; then
@@ -205,9 +294,9 @@ else
 fi
 echo
 
-# === 6. KMS Key Policy ===
+# === 7. KMS Key Policy ===
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}6. KMS Key Policy - Authorized Roles${NC}"
+echo -e "${BLUE}7. KMS Key Policy - Authorized Roles${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
 KMS_KEY_ID=$(aws kms describe-key --key-id "$KMS_ALIAS" --region "$REGION" \

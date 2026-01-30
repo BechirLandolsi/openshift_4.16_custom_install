@@ -1,8 +1,7 @@
 #!/bin/bash
 # Get the ingress load balancer ARN for Terraform external data source
 # Returns JSON with LoadBalancerArn
-
-set -e
+# Returns dummy value if cluster doesn't exist (for terraform destroy)
 
 eval "$(jq -r '@sh "bucket=\(.bucket)"')"
 
@@ -12,6 +11,17 @@ STDFILE=$OUTPUTDIR/get_ingress_exec.log
 
 # Get kubeconfig path
 KUBECONFIG="installer-files/auth/kubeconfig"
+
+# Check if kubeconfig exists - if not, return dummy value (for destroy)
+if [[ ! -f "$KUBECONFIG" ]]; then
+    # Get region and account for dummy ARN
+    REGION=$(aws configure get region 2>/dev/null || echo "eu-west-3")
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "000000000000")
+    # Return a dummy ARN for terraform destroy to proceed
+    jq -n --arg region "$REGION" --arg account "$ACCOUNT_ID" \
+        '{"LoadBalancerArn": "arn:aws:elasticloadbalancing:\($region):\($account):loadbalancer/net/dummy/0000000000000000"}'
+    exit 0
+fi
 
 # Wait for ingress to be ready and get the hostname
 MAX_RETRIES=30
