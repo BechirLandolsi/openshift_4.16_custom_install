@@ -1,0 +1,11 @@
+{
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "[terraform]": {
+    "files.eol": "\n"
+  },
+  "[shellscript]": {
+    "files.eol": "\n"
+  }
+}

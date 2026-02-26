@@ -1,0 +1,19 @@
+# S3 Backend Configuration (DISABLED by default)
+# 
+# Currently using LOCAL state storage (terraform.tfstate file)
+#
+# To enable S3 remote state:
+# 1. Uncomment the terraform block below
+# 2. Change bucket name to your unique bucket
+# 3. Create S3 bucket first (see backend.tf.example for commands)
+# 4. Run: terraform init
+
+# terraform {
+#   backend "s3" {
+#     bucket         = "openshift-demo-tfstate"
+#     key            = "terraform.tfstate"
+#     region         = "eu-west-1"
+#     dynamodb_table = "openshift-demo-tfstate-lock"
+#     encrypt        = true
+#   }
+# }

@@ -1,0 +1,33 @@
+# Terraform state files
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.auto.tfvars
+
+# Crash log files
+crash.log
+
+# Sensitive files - DO NOT COMMIT
+installer-files/
+output/
+*.pem
+*.key
+id_rsa*
+kubeconfig
+kubeadmin-password
+
+# Log files
+*.log
+*.tar.gz
+
+# Backup files
+*.bak
+*~
+.DS_Store
+
+# Environment files
+.env
+*.env
