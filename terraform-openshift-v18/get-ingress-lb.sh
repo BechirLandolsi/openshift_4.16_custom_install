@@ -7,12 +7,18 @@
 
 set -e
 
-eval "$(jq -r '@sh "bucket=\(.bucket)"')"
+# Parse input from Terraform data.external
+eval "$(jq -r '@sh "bucket=\(.bucket) region=\(.region)"')"
 
 OUTPUTDIR=.
 ERRORFILE="$OUTPUTDIR/get_ingress_error.log"
 STDFILE="$OUTPUTDIR/get_ingress_exec.log"
 KUBECONFIG="installer-files/auth/kubeconfig"
+
+# Use region from Terraform if provided, otherwise try to detect
+if [ -z "$region" ] || [ "$region" == "null" ]; then
+    region=$(aws configure get region 2>/dev/null || echo "")
+fi
 
 # Function to output JSON result
 output_result() {
@@ -22,9 +28,9 @@ output_result() {
 
 # Function to get dummy ARN (for destroy when cluster doesn't exist)
 get_dummy_arn() {
-    local region=$(aws configure get region 2>/dev/null || echo "eu-west-3")
+    local r="${region:-eu-west-3}"
     local account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "000000000000")
-    echo "arn:aws:elasticloadbalancing:${region}:${account}:loadbalancer/net/dummy/0000000000000000"
+    echo "arn:aws:elasticloadbalancing:${r}:${account}:loadbalancer/net/dummy/0000000000000000"
 }
 
 # Log function
@@ -71,12 +77,42 @@ if [ -z "$INGRESS_HOST" ] || [ "$INGRESS_HOST" == "null" ]; then
     exit 1
 fi
 
-# Extract region from hostname (format: xxx.REGION.elb.amazonaws.com)
-REGION=$(echo "$INGRESS_HOST" | grep -oP '(?<=\.)[a-z]{2}-[a-z]+-[0-9]+(?=\.elb)')
-if [ -z "$REGION" ]; then
-    REGION=$(aws configure get region 2>/dev/null || echo "eu-west-3")
-    log "Could not extract region from hostname, using: $REGION"
+# Determine region (priority: Terraform input > hostname extraction > AWS config)
+REGION=""
+
+# 1. Use region from Terraform input if available
+if [ -n "$region" ] && [ "$region" != "null" ]; then
+    REGION="$region"
+    log "Using region from Terraform: $REGION"
 fi
+
+# 2. Try to extract from hostname (format: xxx.REGION.elb.amazonaws.com)
+if [ -z "$REGION" ]; then
+    # Use sed for better portability (grep -P not available everywhere)
+    REGION=$(echo "$INGRESS_HOST" | sed -n 's/.*\.\([a-z][a-z]-[a-z]*-[0-9]\)\.elb.*/\1/p')
+    if [ -n "$REGION" ]; then
+        log "Extracted region from hostname: $REGION"
+    fi
+fi
+
+# 3. Fallback to AWS CLI config
+if [ -z "$REGION" ]; then
+    REGION=$(aws configure get region 2>/dev/null || echo "")
+    if [ -n "$REGION" ]; then
+        log "Using region from AWS config: $REGION"
+    fi
+fi
+
+# 4. Final check - fail if no region found
+if [ -z "$REGION" ]; then
+    log "ERROR: Failed to determine AWS region"
+    log "  - Terraform input: $region"
+    log "  - Hostname: $INGRESS_HOST"
+    log "  - AWS config: $(aws configure get region 2>/dev/null || echo 'not set')"
+    echo "Failed to determine AWS region from Terraform, hostname, or AWS config" >> "$ERRORFILE"
+    exit 1
+fi
+
 log "Using region: $REGION"
 
 # Get the NLB ARN using elbv2 API (OpenShift 4.16 uses NLB)

@@ -61,6 +61,7 @@ data "external" "get_ingress_lb" {
 
   query = {
     bucket = join("-", [lower(var.cluster_name), lower(var.infra_random_id), "terraform-remote-state-storage-s3"])
+    region = var.region
   }
 
   program = ["bash", "get-ingress-lb.sh"]
